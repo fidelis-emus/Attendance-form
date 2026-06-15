@@ -69,6 +69,7 @@ export default function App() {
   const [members, setMembers] = useState<Member[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceRecord[]>([]);
+  const [sundaysList, setSundaysList] = useState<string[]>([]);
   const [whatsAppLogs, setWhatsAppLogs] = useState<WhatsAppLog[]>([]);
   const [adminsList, setAdminsList] = useState<Admin[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -103,6 +104,21 @@ export default function App() {
   // Load APP URL for redirection
   const [appUrl, setAppUrl] = useState("");
 
+  // Synchronize App View Mode based on Pathname
+  useEffect(() => {
+    const syncViewMode = () => {
+      if (window.location.pathname === "/admin") {
+        setViewMode("admin");
+      } else {
+        setViewMode("guest");
+      }
+    };
+
+    syncViewMode();
+    window.addEventListener("popstate", syncViewMode);
+    return () => window.removeEventListener("popstate", syncViewMode);
+  }, []);
+
   // Restore persistent login session from sessionStorage on reload
   useEffect(() => {
     const stored = sessionStorage.getItem("church_admin_session");
@@ -110,8 +126,7 @@ export default function App() {
       try {
         const storedUser = JSON.parse(stored);
         setUser(storedUser);
-        setAdminRole(storedUser.role);
-        setViewMode("admin");
+         setAdminRole(storedUser.role);
       } catch (e) {
         sessionStorage.removeItem("church_admin_session");
       }
@@ -201,6 +216,7 @@ export default function App() {
       sessionStorage.removeItem("church_admin_session");
       setUser(null);
       setAdminRole(null);
+      window.history.pushState(null, "", "/");
       setViewMode("guest");
       setLoginEmail("");
       setLoginPassword("");
@@ -221,6 +237,7 @@ export default function App() {
         "/api/whatsapp/config",
         "/api/admins",
         "/api/audit-logs",
+        "/api/sundays",
       ];
 
       const [
@@ -232,6 +249,7 @@ export default function App() {
         whatsappConfigData,
         adminsListData,
         auditLogsData,
+        sundaysData,
       ] = await Promise.all(endpoints.map(ep => fetch(ep).then(res => res.json())));
 
       // Ensure stable sorting
@@ -242,6 +260,7 @@ export default function App() {
       setMembers(membersData);
       setWorkers(workersData);
       setAttendanceHistory(attendanceData);
+      setSundaysList(sundaysData || []);
       setWhatsAppLogs(sortedWaLogs);
       setWhatsAppConfig(whatsappConfigData);
       setAdminsList(adminsListData);
@@ -539,6 +558,17 @@ export default function App() {
     window.print();
   };
 
+  const formatDisplayDate = (dStr: string) => {
+    if (!dStr) return "";
+    try {
+      const parts = dStr.split("-");
+      const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    } catch {
+      return dStr;
+    }
+  };
+
   // Filter Helper
   const getFilteredPersons = (list: any[]) => {
     return list.filter(item => {
@@ -638,7 +668,15 @@ export default function App() {
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setViewMode(prev => prev === "guest" ? "admin" : "guest")}
+            onClick={() => {
+              if (viewMode === "guest") {
+                window.history.pushState(null, "", "/admin");
+                setViewMode("admin");
+              } else {
+                window.history.pushState(null, "", "/");
+                setViewMode("guest");
+              }
+            }}
             className="text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-450 hover:bg-slate-50 dark:hover:bg-slate-950 cursor-pointer transition-all"
           >
             {viewMode === "guest" ? "🔑 Admin Portal" : "📱 Public Register view"}
@@ -706,6 +744,23 @@ export default function App() {
               <p className="text-sm text-slate-500 dark:text-slate-400 font-medium mb-6">
                 Please authenticate using your registered administrator credentials. Only authorized personnel can manage the church attendance database.
               </p>
+
+              {/* Dynamic Credentials helper block */}
+              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 rounded-2xl p-4 mb-6 text-left shadow-sm">
+                <span className="block text-[11px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                  🔑 System Login Credentials
+                </span>
+                <div className="space-y-1 text-xs text-slate-700 dark:text-slate-350">
+                  <div className="flex justify-between py-0.5 border-b border-amber-200/30 dark:border-amber-900/10">
+                    <span className="font-semibold text-slate-500 dark:text-slate-450">Email:</span>
+                    <code className="bg-amber-100/50 dark:bg-amber-950/60 px-1.5 py-0.5 rounded font-mono select-all">fidelisemus@gmail.com</code>
+                  </div>
+                  <div className="flex justify-between py-0.5">
+                    <span className="font-semibold text-slate-500 dark:text-slate-450">Password:</span>
+                    <code className="bg-amber-100/50 dark:bg-amber-950/60 px-1.5 py-0.5 rounded font-mono select-all">admin123</code>
+                  </div>
+                </div>
+              </div>
 
               {authError && (
                 <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 text-rose-600 dark:text-rose-450 rounded-xl text-xs font-semibold mb-5 text-left">
@@ -939,7 +994,7 @@ export default function App() {
                   </div>
 
                   {/* Interactive Recharts Analytics Panels */}
-                  <AnalyticsCharts stats={stats} attendanceHistory={attendanceHistory} />
+                  <AnalyticsCharts stats={stats} attendanceHistory={attendanceHistory} sundaysList={sundaysList} />
                 </div>
               )}
 
@@ -955,7 +1010,7 @@ export default function App() {
                       Configure a service Sunday date, generate a unique canvas barcode, download or print. Scanning this points members straight to their mobile register!
                     </p>
                   </div>
-                  <QrCodeGenerator appUrl={appUrl} />
+                  <QrCodeGenerator appUrl={appUrl} sundaysList={sundaysList} onSundayAdded={loadAllAdminData} />
                 </div>
               )}
 
@@ -1085,10 +1140,11 @@ export default function App() {
                           className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-bold focus:outline-none"
                         >
                           <option value="all">⛪ All Sundays</option>
-                          <option value="2026-06-07">June 7, 2026</option>
-                          <option value="2026-06-14">June 14, 2026</option>
-                          <option value="2026-06-21">June 21, 2026</option>
-                          <option value="2026-06-28">June 28, 2026</option>
+                          {sundaysList.map((sun) => (
+                            <option key={sun} value={sun}>
+                              ⛪ {formatDisplayDate(sun)} ({sun})
+                            </option>
+                          ))}
                         </select>
                       </div>
                     </div>
@@ -1154,6 +1210,7 @@ export default function App() {
                               <th className="py-3 px-4">WhatsApp Phone</th>
                               <th className="py-3 px-4">Latest Attendance Sunday</th>
                               <th className="py-3 px-4">Attending state</th>
+                              <th className="py-3 px-4">Check-in Time</th>
                               <th className="py-3 px-4">Latest Campaign status</th>
                               <th className="py-3 px-4 no-print">Database Management</th>
                             </tr>
@@ -1161,7 +1218,7 @@ export default function App() {
                           <tbody>
                             {getFilteredPersons(registerSubTab === "workers" ? workers : members).length === 0 ? (
                               <tr>
-                                <td colSpan={6} className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed">
+                                <td colSpan={7} className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed">
                                   Roster is currently empty. Define records using the Add Person wizard.
                                 </td>
                               </tr>
@@ -1188,6 +1245,13 @@ export default function App() {
                                       }`} />
                                       {person.currentStatus}
                                     </span>
+                                  </td>
+                                  <td className="py-3 px-4 font-mono text-xs font-bold text-slate-600 dark:text-slate-400">
+                                    {person.currentStatus === "Present" && person.attendedAtTime ? (
+                                      new Date(person.attendedAtTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                                    ) : (
+                                      <span className="text-slate-300 dark:text-slate-700">-</span>
+                                    )}
                                   </td>
                                   <td className="py-3 px-4">
                                     {person.messageSent ? (

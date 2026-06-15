@@ -207,6 +207,42 @@ function getSundayOfDate(d: Date): string {
   return formatDate(target);
 }
 
+// Helper: Get automatic Sundays for previous, current, and next year
+function getAutomaticSundays(): string[] {
+  const currentYear = new Date().getFullYear();
+  const sundays: string[] = [];
+  const years = [currentYear - 1, currentYear, currentYear + 1];
+  for (const year of years) {
+    const d = new Date(year, 0, 1);
+    while (d.getDay() !== 0) {
+      d.setDate(d.getDate() + 1);
+    }
+    while (d.getFullYear() === year) {
+      sundays.push(d.toISOString().split("T")[0]);
+      d.setDate(d.getDate() + 7);
+    }
+  }
+  return sundays;
+}
+
+// Function to fetch and merge all sundays
+async function getAllServiceSundays(): Promise<string[]> {
+  const automatic = getAutomaticSundays();
+  try {
+    const db = await getDb();
+    const customDocs = await db.collection("sundays").find({}).toArray();
+    const customDates = customDocs.map((doc: any) => doc.date);
+    
+    // Merge, remove duplicates
+    const allSundaysSet = new Set([...automatic, ...customDates]);
+    // Sort chronological DESCENDING (newest first)
+    return Array.from(allSundaysSet).sort((a, b) => b.localeCompare(a));
+  } catch (err) {
+    console.error("Error fetching custom sundays, returning only automatic:", err);
+    return automatic.sort((a, b) => b.localeCompare(a));
+  }
+}
+
 // Helper: Add an Audit Log
 async function addAuditLog(userId: string, userEmail: string, action: string) {
   try {
@@ -322,6 +358,7 @@ app.post("/api/attendance/submit", async (req, res) => {
         whatsAppNumber: phoneNum,
         lastAttendanceDate: dateUsed,
         currentStatus: "Present",
+        attendedAtTime: new Date().toISOString(),
         messageSent: false,
         messageSentDate: null,
         messageDeliveryStatus: null,
@@ -337,6 +374,7 @@ app.post("/api/attendance/submit", async (req, res) => {
             lastName: lastName.trim(),
             lastAttendanceDate: dateUsed,
             currentStatus: "Present",
+            attendedAtTime: new Date().toISOString(),
             messageSent: false,
             messageSentDate: null,
             messageDeliveryStatus: null,
@@ -676,6 +714,70 @@ app.delete("/api/admins/:id", async (req, res) => {
   }
 });
 
+// ==========================================
+// SUNDAY DATES MANAGEMENT ENDPOINTS
+// ==========================================
+
+// GET all Sunday Service Dates (Automatic + Custom)
+app.get("/api/sundays", async (req, res) => {
+  try {
+    const list = await getAllServiceSundays();
+    res.json(list);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST to ADD a custom Sunday Date manual definition
+app.post("/api/sundays", async (req, res) => {
+  try {
+    const { date, adminEmail, adminId } = req.body;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: "Please specify a valid Sunday date in YYYY-MM-DD format." });
+    }
+
+    const db = await getDb();
+    
+    // Check if duplicate
+    const existing = await db.collection("sundays").findOne({ date });
+    if (!existing) {
+      await db.collection("sundays").insertOne({
+        id: generateId(),
+        date
+      });
+      await addAuditLog(
+        adminId || "unknown",
+        adminEmail || "admin@church.org",
+        `Manually defined custom Sunday service date: ${date}`
+      );
+    }
+
+    res.json({ success: true, date });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE a custom Sunday Date manual definition
+app.delete("/api/sundays/:date", async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { adminEmail, adminId } = req.body;
+    const db = await getDb();
+
+    await db.collection("sundays").deleteOne({ date });
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Removed manually defined Sunday service date: ${date}`
+    );
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET system audit logs
 app.get("/api/audit-logs", async (req, res) => {
   try {
@@ -988,6 +1090,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       {
         $set: {
           currentStatus: "Absent",
+          attendedAtTime: null,
           messageSent: true,
           messageSentDate: new Date().toISOString(),
           messageDeliveryStatus: deliveryStatus,
@@ -1007,14 +1110,14 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
   const allMembers = await db.collection("members").find({}, { projection: { _id: 0 } }).toArray();
   for (const m of allMembers) {
     if (!presentTodayIds.has(m.id) && m.lastAttendanceDate !== todaySun) {
-      await db.collection("members").updateOne({ id: m.id }, { $set: { currentStatus: "Absent" } });
+      await db.collection("members").updateOne({ id: m.id }, { $set: { currentStatus: "Absent", attendedAtTime: null } });
     }
   }
 
   const allWorkers = await db.collection("workers").find({}, { projection: { _id: 0 } }).toArray();
   for (const w of allWorkers) {
     if (!presentTodayIds.has(w.id) && w.lastAttendanceDate !== todaySun) {
-      await db.collection("workers").updateOne({ id: w.id }, { $set: { currentStatus: "Absent" } });
+      await db.collection("workers").updateOne({ id: w.id }, { $set: { currentStatus: "Absent", attendedAtTime: null } });
     }
   }
 

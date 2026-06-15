@@ -5,29 +5,45 @@ import { motion } from "motion/react";
 
 interface QrProps {
   appUrl: string;
+  sundaysList?: string[];
+  onSundayAdded?: () => void;
 }
 
-export default function QrCodeGenerator({ appUrl }: QrProps) {
-  // Establish standard test dates
-  const baseSundays = [
-    "2026-06-07",
-    "2026-06-14",
-    "2026-06-21",
-    "2026-06-28",
-  ];
-
-  const [sundays, setSundays] = useState<string[]>(baseSundays);
-  const [selectedSunday, setSelectedSunday] = useState("2026-06-14");
+export default function QrCodeGenerator({ appUrl, sundaysList = [], onSundayAdded }: QrProps) {
+  const [sundays, setSundays] = useState<string[]>([]);
+  const [selectedSunday, setSelectedSunday] = useState("");
   const [newSunday, setNewSunday] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loadingAdd, setLoadingAdd] = useState(false);
   
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (sundaysList && sundaysList.length > 0) {
+      setSundays(sundaysList);
+      // If selectedSunday is empty or not in lists, default to first item which is newest Sunday
+      if (!selectedSunday || !sundaysList.includes(selectedSunday)) {
+        setSelectedSunday(sundaysList[0]);
+      }
+    } else {
+      const baseSundays = [
+        "2026-06-07",
+        "2026-06-14",
+        "2026-06-21",
+        "2026-06-28",
+      ];
+      setSundays(baseSundays);
+      if (!selectedSunday) {
+        setSelectedSunday("2026-06-14");
+      }
+    }
+  }, [sundaysList]);
 
   // Auto-resolve dynamic scanner url
   const targetUrl = `${appUrl || window.location.origin}/?date=${selectedSunday}`;
 
   useEffect(() => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || !selectedSunday) return;
     
     QRCode.toCanvas(
       canvasRef.current,
@@ -51,7 +67,7 @@ export default function QrCodeGenerator({ appUrl }: QrProps) {
     );
   }, [targetUrl, selectedSunday]);
 
-  const handleAddSunday = (e: React.FormEvent) => {
+  const handleAddSunday = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!newSunday) return;
@@ -62,16 +78,34 @@ export default function QrCodeGenerator({ appUrl }: QrProps) {
       return;
     }
 
-    if (sundays.includes(newSunday)) {
-      setSelectedSunday(newSunday);
-      setNewSunday("");
-      return;
-    }
+    setLoadingAdd(true);
+    try {
+      const response = await fetch("/api/sundays", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: newSunday }),
+      });
 
-    const updated = [...sundays, newSunday].sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-    setSundays(updated);
-    setSelectedSunday(newSunday);
-    setNewSunday("");
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData?.error || "Failed to define custom service Sunday date.");
+      }
+
+      setNewSunday("");
+      if (onSundayAdded) {
+        onSundayAdded();
+      } else {
+        if (!sundays.includes(newSunday)) {
+          const updated = [...sundays, newSunday].sort((a, b) => b.localeCompare(a));
+          setSundays(updated);
+        }
+        setSelectedSunday(newSunday);
+      }
+    } catch (err: any) {
+      setError(err?.message || "Failed to define custom Sunday date.");
+    } finally {
+      setLoadingAdd(false);
+    }
   };
 
   const handleDownload = () => {

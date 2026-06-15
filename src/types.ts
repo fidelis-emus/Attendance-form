@@ -5,6 +5,7 @@ export interface Member {
   whatsAppNumber: string; // formatted with country code (e.g. +234...)
   lastAttendanceDate: string; // YYYY-MM-DD
   currentStatus: "Present" | "Absent";
+  attendedAtTime?: string | null; // checkin timestamp ISO or formatted
   messageSent: boolean;
   messageSentDate: string | null; // ISO String or Date
   messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
@@ -17,6 +18,7 @@ export interface Worker {
   whatsAppNumber: string; // formatted with country code
   lastAttendanceDate: string; // YYYY-MM-DD
   currentStatus: "Present" | "Absent";
+  attendedAtTime?: string | null; // checkin timestamp ISO or formatted
   messageSent: boolean;
   messageSentDate: string | null;
   messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
