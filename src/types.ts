@@ -1,0 +1,67 @@
+export interface Member {
+  id: string;
+  firstName: string;
+  lastName: string;
+  whatsAppNumber: string; // formatted with country code (e.g. +234...)
+  lastAttendanceDate: string; // YYYY-MM-DD
+  currentStatus: "Present" | "Absent";
+  messageSent: boolean;
+  messageSentDate: string | null; // ISO String or Date
+  messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
+}
+
+export interface Worker {
+  id: string;
+  firstName: string;
+  lastName: string;
+  whatsAppNumber: string; // formatted with country code
+  lastAttendanceDate: string; // YYYY-MM-DD
+  currentStatus: "Present" | "Absent";
+  messageSent: boolean;
+  messageSentDate: string | null;
+  messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
+}
+
+export interface AttendanceRecord {
+  id: string;
+  date: string; // YYYY-MM-DD (identifies the specific Sunday)
+  personId: string; // References Member or Worker ID
+  personType: "member" | "worker";
+  firstName: string;
+  lastName: string;
+  whatsAppNumber: string;
+  timestamp: string; // ISO 8601 string of when they submitted
+}
+
+export interface WhatsAppLog {
+  id: string;
+  personId: string;
+  personName: string; // Full name for easy display
+  personType: "member" | "worker";
+  whatsAppNumber: string;
+  messageContent: string;
+  sentAt: string; // ISO string
+  deliveryStatus: "Sent" | "Delivered" | "Read" | "Failed";
+  wamid?: string | null; // WhatsApp message ID for webhook tracking
+}
+
+export interface AppSettings {
+  churchWhatsAppNumber: string;
+  phoneNumberId: string;
+  accessToken: string;
+  businessAccountId: string;
+}
+
+export interface Admin {
+  id: string; // Auth UID
+  email: string;
+  role: "Super Admin" | "Pastor" | "Secretary";
+}
+
+export interface AuditLog {
+  id: string;
+  userId: string;
+  userEmail: string;
+  action: string;
+  timestamp: string;
+}
