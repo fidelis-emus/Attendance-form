@@ -794,14 +794,24 @@ app.get("/api/whatsapp/config", async (req, res) => {
   try {
     const db = await getDb();
     const doc = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
+    const memberDefault = "Happy Sunday {Name} and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.";
+    const workerDefault = "Dearest worker {Name}, we missed your valuable service in church today as part of our core team. We hope everything is well. Please reach out to your department leader if you need any support. See you next Sunday. God bless your labor of love!";
+    
     if (doc) {
-      res.json(doc);
+      res.json({
+        ...doc,
+        churchWhatsAppNumber: doc.churchWhatsAppNumber || "+2349029957453",
+        memberTemplate: doc.memberTemplate || memberDefault,
+        workerTemplate: doc.workerTemplate || workerDefault,
+      });
     } else {
       res.json({
-        churchWhatsAppNumber: "",
+        churchWhatsAppNumber: "+2349029957453",
         phoneNumberId: "",
         accessToken: "",
         businessAccountId: "",
+        memberTemplate: memberDefault,
+        workerTemplate: workerDefault,
       });
     }
   } catch (err: any) {
@@ -811,7 +821,7 @@ app.get("/api/whatsapp/config", async (req, res) => {
 
 app.post("/api/whatsapp/config", async (req, res) => {
   try {
-    const { churchWhatsAppNumber, phoneNumberId, accessToken, businessAccountId, adminEmail, adminId } = req.body;
+    const { churchWhatsAppNumber, phoneNumberId, accessToken, businessAccountId, memberTemplate, workerTemplate, adminEmail, adminId } = req.body;
     const db = await getDb();
 
     await db.collection("settings").updateOne(
@@ -823,6 +833,8 @@ app.post("/api/whatsapp/config", async (req, res) => {
           phoneNumberId: phoneNumberId || "",
           accessToken: accessToken || "",
           businessAccountId: businessAccountId || "",
+          memberTemplate: memberTemplate || "",
+          workerTemplate: workerTemplate || "",
         }
       },
       { upsert: true }
@@ -1048,7 +1060,11 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     }
   });
 
-  const messageText = "Happy Sunday and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.";
+  const memberDefault = "Happy Sunday {Name} and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.";
+  const workerDefault = "Dearest worker {Name}, we missed your valuable service in church today as part of our core team. We hope everything is well. Please reach out to your department leader if you need any support. See you next Sunday. God bless your labor of love!";
+
+  const memberTemplate = config?.memberTemplate || memberDefault;
+  const workerTemplate = config?.workerTemplate || workerDefault;
   
   let processedCount = 0;
   let failedCount = 0;
@@ -1058,6 +1074,11 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     const personCol = person.personType === "worker" ? "workers" : "members";
     let deliveryStatus: "Sent" | "Failed" = "Sent";
     let wamid = null;
+
+    const rawTemplate = person.personType === "worker" ? workerTemplate : memberTemplate;
+    const messageText = rawTemplate
+      .replace(/{Name}/g, person.firstName)
+      .replace(/{FullName}/g, `${person.firstName} ${person.lastName}`);
 
     try {
       if (config && config.phoneNumberId && config.accessToken) {

@@ -52,6 +52,8 @@ export interface AppSettings {
   phoneNumberId: string;
   accessToken: string;
   businessAccountId: string;
+  memberTemplate?: string;
+  workerTemplate?: string;
 }
 
 export interface Admin {

@@ -218,20 +218,41 @@ export default function QrCodeGenerator({ appUrl, sundaysList = [], onSundayAdde
             Select Sunday Service Date
           </h3>
 
+          <div className="mb-4">
+            <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5 flex items-center justify-between">
+              <span>Choose Date Dropdown</span>
+              <span className="text-[10px] lowercase font-normal italic text-slate-400">Past, current & next year automated</span>
+            </label>
+            <select
+              value={selectedSunday}
+              onChange={(e) => setSelectedSunday(e.target.value)}
+              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-855 dark:text-slate-100 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all cursor-pointer"
+            >
+              {sundays.map((sun) => (
+                <option key={sun} value={sun}>
+                  ⛪ Sunday {formatDisplayDate(sun)} ({sun})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-1.5 pl-0.5">
+            Quick Select Recent Sundays
+          </label>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
-            {sundays.map((sun) => (
+            {sundays.slice(0, 6).map((sun) => (
               <button
                 key={sun}
                 type="button"
                 onClick={() => setSelectedSunday(sun)}
-                className={`py-3 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight text-center border transition-all ${
+                className={`py-2 px-3 rounded-xl text-xs font-bold tracking-tight text-center border transition-all cursor-pointer ${
                   selectedSunday === sun
                     ? "bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-500/15"
                     : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-900"
                 }`}
               >
                 {formatDisplayDate(sun)}
-                <span className="block text-[9px] opacity-75 font-normal mt-0.5">{sun}</span>
+                <span className="block text-[8px] opacity-75 font-normal mt-0.5">{sun}</span>
               </button>
             ))}
           </div>
@@ -242,11 +263,11 @@ export default function QrCodeGenerator({ appUrl, sundaysList = [], onSundayAdde
             </label>
             <div className="flex gap-2">
               <input
-                type="text"
-                placeholder="2026-07-05 (YYYY-MM-DD)"
+                type="date"
+                required
                 value={newSunday}
                 onChange={(e) => setNewSunday(e.target.value)}
-                className="flex-1 px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500/50 focus:border-blue-500 text-slate-800 dark:text-slate-100 font-mono text-sm"
+                className="flex-1 px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500/50 focus:border-blue-500 text-slate-800 dark:text-slate-100 font-mono text-sm shadow-inner"
               />
               <button
                 type="submit"
