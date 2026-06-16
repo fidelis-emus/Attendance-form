@@ -41,17 +41,23 @@ function sortItems(items: any[], sortQuery: any): any[] {
 class LocalCollection {
   constructor(private name: string, private db: LocalDatabase) {}
 
-  async find(query: any = {}, options: any = {}) {
-    const items = await this.db.readCollection(this.name);
-    const filtered = items.filter(item => matchQuery(item, query));
+  find(query: any = {}, options: any = {}) {
+    const getFiltered = async () => {
+      const items = await this.db.readCollection(this.name);
+      return items.filter(item => matchQuery(item, query));
+    };
     return {
       sort: (sortQuery: any) => {
-        const sorted = sortItems(filtered, sortQuery);
         return {
-          toArray: async () => sorted
+          toArray: async () => {
+            const filtered = await getFiltered();
+            return sortItems(filtered, sortQuery);
+          }
         };
       },
-      toArray: async () => filtered
+      toArray: async () => {
+        return await getFiltered();
+      }
     };
   }
 
@@ -225,21 +231,63 @@ function getAutomaticSundays(): string[] {
   return sundays;
 }
 
-// Function to fetch and merge all sundays
+// Background scheduler helper: Calculate all Sundays of current year and next year, and insert them automatically into the database
+async function ensureMonthlySundaysInserted() {
+  try {
+    const db = await getDb();
+    const currentYear = new Date().getFullYear();
+    const years = [currentYear - 1, currentYear, currentYear + 1];
+    const computedSundays: string[] = [];
+
+    for (const year of years) {
+      const d = new Date(year, 0, 1);
+      // Align to first Sunday of the year
+      while (d.getDay() !== 0) {
+        d.setDate(d.getDate() + 1);
+      }
+      while (d.getFullYear() === year) {
+        computedSundays.push(formatDate(d));
+        d.setDate(d.getDate() + 7);
+      }
+    }
+
+    // Retrieve already registered Sundays in db
+    const existingDocs = await db.collection("sundays").find({}).toArray();
+    const existingSet = new Set(existingDocs.map((doc: any) => doc.date));
+
+    // Determine which calculated entries are missing
+    const missingSundays = computedSundays.filter(date => !existingSet.has(date));
+
+    // Bulk insert newly calculated missing Sundays
+    if (missingSundays.length > 0) {
+      console.log(`[Automated Sunday Scheduler] Inserting ${missingSundays.length} automatically calculated Sundy service dates...`);
+      const payload = missingSundays.map(date => ({
+        id: generateId(),
+        date
+      }));
+      await db.collection("sundays").insertMany(payload);
+    }
+  } catch (err) {
+    console.error("Failed to run automated Sunday calculator schedule:", err);
+  }
+}
+
+// Function to fetch and merge all sundays, ensuring computed ones are inserted
 async function getAllServiceSundays(): Promise<string[]> {
-  const automatic = getAutomaticSundays();
+  // Always trigger the automated insertion on request to keep dates completely refreshed
+  await ensureMonthlySundaysInserted();
   try {
     const db = await getDb();
     const customDocs = await db.collection("sundays").find({}).toArray();
-    const customDates = customDocs.map((doc: any) => doc.date);
+    const customDates: string[] = customDocs.map((doc: any) => String(doc.date));
     
     // Merge, remove duplicates
-    const allSundaysSet = new Set([...automatic, ...customDates]);
+    const allSundaysSet = new Set<string>(customDates);
     // Sort chronological DESCENDING (newest first)
     return Array.from(allSundaysSet).sort((a, b) => b.localeCompare(a));
   } catch (err) {
     console.error("Error fetching custom sundays, returning only automatic:", err);
-    return automatic.sort((a, b) => b.localeCompare(a));
+    return getAutomaticSundays().sort((a, b) => b.localeCompare(a));
   }
 }
 
@@ -409,6 +457,112 @@ app.post("/api/attendance/submit", async (req, res) => {
   }
 });
 
+// Admin-triggered real-time attendance quick toggle
+app.post("/api/attendance/toggle", async (req, res) => {
+  try {
+    const { personId, personType, date, adminEmail, adminId } = req.body;
+    if (!personId || !personType) {
+      return res.status(400).json({ error: "Missing personId or personType" });
+    }
+
+    const todaySunday = getSundayOfDate(new Date());
+    const targetDate = date && date !== "all" ? date : todaySunday;
+    const db = await getDb();
+    const collectionName = personType === "worker" ? "workers" : "members";
+
+    // Grab person details
+    const person = await db.collection(collectionName).findOne({ id: personId });
+    if (!person) {
+      return res.status(404).json({ error: "Person not found in database records" });
+    }
+
+    // Check if check-in record exists for this specific Sunday
+    const existing = await db.collection("attendance").findOne({
+      personId,
+      date: targetDate
+    });
+
+    let newStatus: "Present" | "Absent";
+
+    if (existing) {
+      // Toggle to Absent -> Delete the check-in record
+      await db.collection("attendance").deleteOne({ personId, date: targetDate });
+      newStatus = "Absent";
+
+      // Re-evaluate person status attributes
+      const pastRecords = await db.collection("attendance")
+        .find({ personId })
+        .sort({ date: -1 })
+        .toArray();
+      const latestPastDate = pastRecords.length > 0 ? pastRecords[0].date : "";
+      const latestPastTime = pastRecords.length > 0 ? pastRecords[0].timestamp : null;
+
+      const isDefaultToday = targetDate === todaySunday;
+      const updateSet: any = {
+        lastAttendanceDate: latestPastDate
+      };
+      if (isDefaultToday) {
+        updateSet.currentStatus = "Absent";
+      }
+
+      await db.collection(collectionName).updateOne(
+        { id: personId },
+        { $set: updateSet }
+      );
+
+      await addAuditLog(
+        adminId || "unknown",
+        adminEmail || "admin@church.org",
+        `Admin toggled attendance: Marked ${person.firstName} ${person.lastName} as Absent for ${targetDate}`
+      );
+    } else {
+      // Toggle to Present -> Create database check-in entry
+      const checkInTime = new Date().toISOString();
+      await db.collection("attendance").insertOne({
+        id: generateId(),
+        date: targetDate,
+        personId,
+        personType,
+        firstName: person.firstName,
+        lastName: person.lastName,
+        whatsAppNumber: person.whatsAppNumber,
+        timestamp: checkInTime
+      });
+      newStatus = "Present";
+
+      const isDefaultToday = targetDate === todaySunday;
+      const shouldUpdateDate = !person.lastAttendanceDate || targetDate >= person.lastAttendanceDate;
+
+      const updateSet: any = {};
+      if (shouldUpdateDate) {
+        updateSet.lastAttendanceDate = targetDate;
+      }
+      if (isDefaultToday || shouldUpdateDate) {
+        updateSet.currentStatus = "Present";
+        updateSet.attendedAtTime = checkInTime;
+      }
+
+      if (Object.keys(updateSet).length > 0) {
+        await db.collection(collectionName).updateOne(
+          { id: personId },
+          { $set: updateSet }
+        );
+      }
+
+      await addAuditLog(
+        adminId || "unknown",
+        adminEmail || "admin@church.org",
+        `Admin toggled attendance: Marked ${person.firstName} ${person.lastName} as Present for ${targetDate}`
+      );
+    }
+
+    res.json({ success: true, newStatus });
+  } catch (err: any) {
+    console.error("Attendance quick toggle failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET Dashboards Stats
 app.get("/api/dashboard/stats", async (req, res) => {
   try {
@@ -490,7 +644,7 @@ app.get("/api/members", async (req, res) => {
 
 app.post("/api/members", async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId } = req.body;
+    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes } = req.body;
     if (!firstName || !lastName || !whatsAppNumber) {
       return res.status(400).json({ error: "Missing fields" });
     }
@@ -502,6 +656,7 @@ app.post("/api/members", async (req, res) => {
       whatsAppNumber: whatsAppNumber.trim(),
       lastAttendanceDate: lastAttendanceDate || "",
       currentStatus: currentStatus || "Absent",
+      notes: notes || "",
       messageSent: false,
       messageSentDate: null,
       messageDeliveryStatus: null,
@@ -569,7 +724,7 @@ app.get("/api/workers", async (req, res) => {
 
 app.post("/api/workers", async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId } = req.body;
+    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes } = req.body;
     if (!firstName || !lastName || !whatsAppNumber) {
       return res.status(400).json({ error: "Missing fields" });
     }
@@ -581,6 +736,7 @@ app.post("/api/workers", async (req, res) => {
       whatsAppNumber: whatsAppNumber.trim(),
       lastAttendanceDate: lastAttendanceDate || "",
       currentStatus: currentStatus || "Absent",
+      notes: notes || "",
       messageSent: false,
       messageSentDate: null,
       messageDeliveryStatus: null,
@@ -1228,6 +1384,16 @@ cron.schedule("0 18 * * 0", async () => {
   }
 });
 
+// Calculate and ensure all Sundays of the year are inserted automatically every Sunday midnight
+cron.schedule("0 0 * * 0", async () => {
+  try {
+    console.log("[Automated Scheduler] Running scheduled check & insert for Sunday service dates...");
+    await ensureMonthlySundaysInserted();
+  } catch (err) {
+    console.error("Automated Sunday calculation scheduler failed:", err);
+  }
+});
+
 // ==========================================
 // VITE DEV SERVER OR STATIC ASSETS PRODUCTION
 // ==========================================
@@ -1248,8 +1414,15 @@ async function startServer() {
   }
 
   // Start Server on PORT 3000 and HOST 0.0.0.0
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Church Attendance Management Server running on port ${PORT}`);
+    // Run initial calculation check & populate on server startup
+    try {
+      await ensureMonthlySundaysInserted();
+      console.log("[Startup] Real-time automated calculation and database insertion of Sunday service dates completed! 'sundaysList' is ready.");
+    } catch (startupErr) {
+      console.error("[Startup] Initial automated Sunday calculation failed:", startupErr);
+    }
   });
 }
 

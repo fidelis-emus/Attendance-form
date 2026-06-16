@@ -130,6 +130,7 @@ export default function App() {
     lastName: "",
     whatsAppNumber: "",
     currentStatus: "Absent" as "Present" | "Absent",
+    notes: "",
   });
 
   const [showAddAdminModal, setShowAddAdminModal] = useState(false);
@@ -390,6 +391,7 @@ export default function App() {
           lastName: newPerson.lastName.trim(),
           whatsAppNumber: phoneNum,
           currentStatus: newPerson.currentStatus || "Absent",
+          notes: newPerson.notes.trim(),
           lastAttendanceDate: "",
           adminEmail: user?.email,
           adminId: user?.uid,
@@ -408,6 +410,7 @@ export default function App() {
         lastName: "",
         whatsAppNumber: "",
         currentStatus: "Absent",
+        notes: "",
       });
       await loadAllAdminData();
     } catch (err: any) {
@@ -447,6 +450,38 @@ export default function App() {
       }
 
       addNotification("Record removed successfully", "success");
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  // Real-time admin quick status toggle
+  const handleToggleAttendance = async (personId: string, personType: "member" | "worker") => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied: Pastors can only view reports.", "error");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/attendance/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personId,
+          personType,
+          date: sundayFilter,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to toggle attendance status.");
+      }
+
+      addNotification("Attendance checked / status toggled successfully!", "success");
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
@@ -729,14 +764,19 @@ export default function App() {
 
       // Filter by Month or Sunday
       let matchesSunday = true;
-      if (sundayFilter !== "all" && item.lastAttendanceDate) {
-        matchesSunday = item.lastAttendanceDate === sundayFilter;
+      if (sundayFilter !== "all") {
+        matchesSunday = attendanceHistory.some(
+          (rec) => rec.personId === item.id && rec.date === sundayFilter
+        );
       }
 
       let matchesMonth = true;
-      if (monthFilter !== "all" && item.lastAttendanceDate) {
-        const monthNum = item.lastAttendanceDate.substring(5, 7); // YYYY-MM-DD -> MM
-        matchesMonth = monthNum === monthFilter;
+      if (monthFilter !== "all") {
+        matchesMonth = attendanceHistory.some((rec) => {
+          if (rec.personId !== item.id) return false;
+          const monthNum = rec.date.substring(5, 7); // YYYY-MM-DD -> MM
+          return monthNum === monthFilter;
+        });
       }
 
       return (nameMatched || phoneMatched) && matchesSunday && matchesMonth;
@@ -1544,38 +1584,66 @@ export default function App() {
                                     </span>
                                   </td>
                                   <td className="py-3 px-4">
-                                    <span
-                                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                                        person.currentStatus === "Present"
-                                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
-                                          : "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
-                                      }`}
-                                    >
-                                      <span
-                                        className={`w-1.5 h-1.5 rounded-full ${
-                                          person.currentStatus === "Present"
-                                            ? "bg-emerald-500"
-                                            : "bg-rose-500 animate-pulse"
-                                        }`}
-                                      />
-                                      {person.currentStatus}
-                                    </span>
+                                    {(() => {
+                                      const isPresent = sundayFilter === "all"
+                                        ? person.currentStatus === "Present"
+                                        : attendanceHistory.some(rec => rec.personId === person.id && rec.date === sundayFilter);
+
+                                      return (
+                                        <div className="flex items-center gap-2">
+                                          <span
+                                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                                              isPresent
+                                                ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
+                                                : "bg-rose-50 text-rose-700 dark:bg-rose-955/20 dark:text-rose-455"
+                                            }`}
+                                          >
+                                            <span
+                                              className={`w-1.5 h-1.5 rounded-full ${
+                                                isPresent ? "bg-emerald-500" : "bg-rose-500 animate-pulse"
+                                              }`}
+                                            />
+                                            {isPresent ? "Present" : "Absent"}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : "member")}
+                                            className="p-1 px-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors cursor-pointer select-none text-[10px] font-bold border border-slate-200 dark:border-slate-800 shadow-xs"
+                                            title={`Toggle attendance state for ${sundayFilter === "all" ? "current Sunday" : sundayFilter}`}
+                                            disabled={adminRole === "Pastor"}
+                                          >
+                                            Toggle 🔄
+                                          </button>
+                                        </div>
+                                      );
+                                    })()}
                                   </td>
                                   <td className="py-3 px-4 font-mono text-xs font-bold text-slate-600 dark:text-slate-400">
-                                    {person.currentStatus === "Present" &&
-                                    person.attendedAtTime ? (
-                                      new Date(
-                                        person.attendedAtTime,
-                                      ).toLocaleTimeString([], {
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                        second: "2-digit",
-                                      })
-                                    ) : (
-                                      <span className="text-slate-300 dark:text-slate-700">
-                                        -
-                                      </span>
-                                    )}
+                                    {(() => {
+                                      let recordTime = null;
+                                      if (sundayFilter === "all") {
+                                        recordTime = person.attendedAtTime;
+                                      } else {
+                                        const match = attendanceHistory.find(
+                                          (rec) => rec.personId === person.id && rec.date === sundayFilter
+                                        );
+                                        recordTime = match ? match.timestamp : null;
+                                      }
+
+                                      if (recordTime) {
+                                        return new Date(recordTime).toLocaleTimeString([], {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                          second: "2-digit",
+                                        });
+                                      } else {
+                                        return (
+                                          <span className="text-slate-350 dark:text-slate-700 font-normal">
+                                            -
+                                          </span>
+                                        );
+                                      }
+                                    })()}
                                   </td>
                                   <td className="py-3 px-4">
                                     {person.messageSent ? (
@@ -2524,6 +2592,59 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Notes Administration Card */}
+                    <div className="bg-slate-50 dark:bg-slate-950/45 border border-slate-200/40 dark:border-slate-850 p-5 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="font-display font-bold text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                          📝 Qualitative Attendance & Profile Notes
+                        </h4>
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                          Optional details, medical records, check remarks, or comments
+                        </span>
+                      </div>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <textarea
+                          id="person-notes-textarea"
+                          key={selectedDetailsPerson.id}
+                          rows={2}
+                          defaultValue={selectedDetailsPerson.notes || ""}
+                          placeholder="Type informative notes here..."
+                          className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200/30 dark:border-slate-800 rounded-xl text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const notesVal = (document.getElementById("person-notes-textarea") as HTMLTextAreaElement)?.value || "";
+                            try {
+                              const endpoint = selectedDetailsPersonType === "worker"
+                                ? `/api/workers/${selectedDetailsPerson.id}`
+                                : `/api/members/${selectedDetailsPerson.id}`;
+                              
+                              const res = await fetch(endpoint, {
+                                method: "PUT",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ notes: notesVal }),
+                              });
+                              if (!res.ok) throw new Error("Could not save notes");
+                              
+                              addNotification("Person's biography notes updated successfully!", "success");
+                              await loadAllAdminData();
+                              
+                              setSelectedDetailsPerson({
+                                ...selectedDetailsPerson,
+                                notes: notesVal
+                              });
+                            } catch (e: any) {
+                              addNotification("Failed to update notes: " + e.message, "error");
+                            }
+                          }}
+                          className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2 rounded-xl text-xs sm:self-end cursor-pointer uppercase tracking-wider transition-colors shrink-0"
+                        >
+                          Save Notes
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Split View Content Grid */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
                       {/* Left: Attendance History Timeline */}
@@ -2758,6 +2879,24 @@ export default function App() {
                           <option value="Present">Present</option>
                         </select>
                       </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Optional Biography / Attendance Notes
+                      </label>
+                      <textarea
+                        rows={2}
+                        placeholder="Save details, specific roles, or notes here..."
+                        value={newPerson.notes}
+                        onChange={(e) =>
+                          setNewPerson({
+                            ...newPerson,
+                            notes: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
                     </div>
 
                     <button
