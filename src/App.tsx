@@ -107,6 +107,21 @@ export default function App() {
     businessAccountId: "",
   });
 
+  // Licensing & Subscription States
+  const [subInfo, setSubInfo] = useState<{
+    planType: string;
+    activationDate: string;
+    expiryDate: string;
+    licenseKey: string;
+    isExpired: boolean;
+  } | null>(null);
+  const [subUnlockEmail, setSubUnlockEmail] = useState("");
+  const [subUnlockPassword, setSubUnlockPassword] = useState("");
+  const [subUnlockError, setSubUnlockError] = useState<string | null>(null);
+  const [subUnlockedSuperAdmin, setSubUnlockedSuperAdmin] = useState<{ id: string; email: string } | null>(null);
+  const [subSelectedPlan, setSubSelectedPlan] = useState<"Monthly" | "Quarterly" | "Yearly">("Monthly");
+  const [subApplying, setSubApplying] = useState(false);
+
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState("");
   const [monthFilter, setMonthFilter] = useState("all");
@@ -198,6 +213,7 @@ export default function App() {
   // Fetch all administration tables once Admin logs in and is authorized
   useEffect(() => {
     if (user && adminRole) {
+      fetchSubscriptionInfo();
       loadAllAdminData();
     }
   }, [user, adminRole]);
@@ -281,6 +297,79 @@ export default function App() {
       addNotification("Logged out safely.", "info");
     } catch (err: any) {
       addNotification("Logout failed: " + err.message, "error");
+    }
+  };
+
+  const fetchSubscriptionInfo = async () => {
+    try {
+      const res = await fetch("/api/subscription/info");
+      if (res.ok) {
+        const data = await res.json();
+        setSubInfo(data);
+      }
+    } catch (err) {
+      console.error("Failed to load subscription info:", err);
+    }
+  };
+
+  const handleSubUnlockAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubUnlockError(null);
+    try {
+      if (!subUnlockEmail.trim() || !subUnlockPassword.trim()) {
+        throw new Error("Both email and password are required.");
+      }
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: subUnlockEmail.trim().toLowerCase(),
+          password: subUnlockPassword.trim(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 402 && data.error === "SUBSCRIPTION_EXPIRED") {
+          throw new Error("Standard Admin credentials cannot bypass the license lock. Only Super Admin logins are authorized here.");
+        }
+        throw new Error(data.error || "Authentication failed.");
+      }
+      if (data.role !== "Super Admin") {
+        throw new Error("Access Denied: Only Super Administrators can bypass this screen and renew licenses.");
+      }
+      setSubUnlockedSuperAdmin({ id: data.id, email: data.email });
+      addNotification("Super Admin credentials confirmed! You can now apply a renewal plan.", "success");
+    } catch (err: any) {
+      setSubUnlockError(err.message || "Failed to authenticate Super Admin.");
+    }
+  };
+
+  const handleApplyNewSubscriptionPlan = async () => {
+    setSubApplying(true);
+    try {
+      const response = await fetch("/api/subscription/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planType: subSelectedPlan,
+          adminId: subUnlockedSuperAdmin?.id || user?.uid,
+          adminEmail: subUnlockedSuperAdmin?.email || user?.email,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to apply license.");
+      }
+      addNotification(`Successfully activated ${subSelectedPlan} subscription plan!`, "success");
+      setSubInfo(data.subscription);
+      setSubUnlockedSuperAdmin(null);
+      setSubUnlockEmail("");
+      setSubUnlockPassword("");
+      await loadAllAdminData();
+    } catch (err: any) {
+      alert(err.message || "Error applying subscription.");
+    } finally {
+      setSubApplying(false);
     }
   };
 
@@ -1038,7 +1127,123 @@ export default function App() {
         )}
 
         {/* 3. SIGNED-IN WORKSPACE DASHBOARD */}
-        {viewMode === "admin" && user && adminRole && (
+        {viewMode === "admin" && user && adminRole && subInfo?.isExpired && adminRole !== "Super Admin" ? (
+          <div className="flex-grow flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 shadow-md"
+            >
+              <div className="flex flex-col items-center text-center">
+                <span className="p-1 px-3 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-bold rounded-full text-[10px] uppercase tracking-wider mb-4 flex items-center gap-1.5 animate-pulse">
+                  ⚠️ LICENSE DEACTIVATED
+                </span>
+                <h3 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100">
+                  Church Portal Blocked
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium leading-relaxed">
+                  The church administration licensing subscription has reached its expiration date. While public attendance registration continues in the background, system views are locked. To resume, please contact your Super Admin to log in and renew the license key.
+                </p>
+              </div>
+
+              {!subUnlockedSuperAdmin ? (
+                <form onSubmit={handleSubUnlockAuth} className="mt-6 space-y-4 pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest text-center mb-2">
+                    Super Admin Unlock Credentials
+                  </h4>
+
+                  {subUnlockError && (
+                    <div className="p-3 bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 text-xs font-bold rounded-xl text-center">
+                      {subUnlockError}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5">
+                      Super Admin Email Address
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. fidelisemus@gmail.com"
+                      value={subUnlockEmail}
+                      onChange={(e) => setSubUnlockEmail(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5">
+                      System Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="Enter system access password"
+                      value={subUnlockPassword}
+                      onChange={(e) => setSubUnlockPassword(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition-all cursor-pointer shadow-sm"
+                  >
+                    Authenticate Super Admin
+                  </button>
+                </form>
+              ) : (
+                <div className="mt-6 space-y-4 pt-6 border-t border-slate-100 dark:border-slate-800">
+                  <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30 text-xs font-bold rounded-xl text-center">
+                    Super Admin Verified: {subUnlockedSuperAdmin.email}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-605 dark:text-slate-400 mb-2 font-semibold">
+                      Select Extension Plan Type
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(["Monthly", "Quarterly", "Yearly"] as const).map((plan) => (
+                        <button
+                          key={plan}
+                          type="button"
+                          onClick={() => setSubSelectedPlan(plan)}
+                          className={`py-2 px-1 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
+                            subSelectedPlan === plan
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : "bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 border border-slate-200/50 dark:border-slate-850 text-slate-600 dark:text-slate-400"
+                          }`}
+                        >
+                          {plan}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleApplyNewSubscriptionPlan}
+                    disabled={subApplying}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl text-sm transition-all cursor-pointer shadow-sm"
+                  >
+                    {subApplying ? "Enforcing New License..." : `Activate ${subSelectedPlan} Subscription`}
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-6 flex justify-between items-center text-[10px] font-mono text-slate-400">
+                <span>Safe Mode Active</span>
+                <button
+                  onClick={handleAdminSignOut}
+                  className="text-red-500 hover:underline font-bold"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : viewMode === "admin" && user && adminRole && (
           <div className="space-y-6 flex-1 flex flex-col">
             {/* Horizontal Command Sidebar */}
             <nav className="flex overflow-auto gap-1 border-b border-slate-200 dark:border-slate-850 pb-2 scrollbar-none no-print">
@@ -2294,6 +2499,138 @@ export default function App() {
                       >
                         <Download size={15} /> Export JSON Backup file
                       </button>
+                    </div>
+
+                    {/* Workspace Subscription Management Card */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-3xl p-6 relative overflow-hidden shadow-sm">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl pointer-events-none" />
+                      
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm">🎫</span>
+                          <h4 className="font-display font-bold text-slate-850 dark:text-slate-100 text-xs">
+                            Workspace Licensing & Plans
+                          </h4>
+                        </div>
+                        <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                          subInfo?.isExpired
+                            ? "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400"
+                            : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                        }`}>
+                          {subInfo?.isExpired ? "Expired" : "Active"}
+                        </span>
+                      </div>
+                      
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-5 leading-relaxed">
+                        Control church portal access. Standard administrators are locked out once the subscription expires. Super Administrators can renew or change licensing plans at any time.
+                      </p>
+
+                      <div className="space-y-2 mb-6 bg-slate-50 dark:bg-slate-950 p-4 rounded-xl border border-slate-150 dark:border-slate-850 text-xs text-slate-600 dark:text-slate-400 font-medium">
+                        <div className="flex justify-between items-center py-0.5">
+                          <span>Current Active Tier:</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-200 bg-indigo-50 dark:bg-indigo-950/30 px-2 py-0.5 rounded text-[10px] text-indigo-600 dark:text-indigo-400">
+                            {subInfo?.planType || "Monthly"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-0.5">
+                          <span>Expiry Date:</span>
+                          <span className={`font-bold ${subInfo?.isExpired ? "text-rose-600 shadow-sm shadow-rose-500/10" : "text-slate-800 dark:text-slate-200"}`}>
+                            {subInfo?.expiryDate ? new Date(subInfo.expiryDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "N/A"}
+                          </span>
+                        </div>
+                        <div className="flex flex-col pt-2 border-t border-slate-150 dark:border-slate-850/50">
+                          <span className="text-[10px] text-slate-400 uppercase tracking-wider">Cryptographic License Key:</span>
+                          <span className="font-mono text-[10px] bg-white dark:bg-slate-900 p-2 rounded mt-1 text-indigo-600 dark:text-indigo-400 break-all select-all border border-slate-100 dark:border-slate-850">
+                            {subInfo?.licenseKey || "CHM-ACTIVE-MONTHLY-882"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {adminRole === "Super Admin" && (
+                        <div className="space-y-4">
+                          <div className="border-t border-slate-100 dark:border-slate-850 pt-4">
+                            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3 pl-0.5">
+                              1. Select Licensing Plan Tier
+                            </label>
+                            
+                            <div className="space-y-2">
+                              {[
+                                {
+                                  id: "Monthly" as const,
+                                  price: "$39",
+                                  period: "month",
+                                  desc: "30 consecutive days billing coverage.",
+                                  tag: "Basic Coverage"
+                                },
+                                {
+                                  id: "Quarterly" as const,
+                                  price: "$99",
+                                  period: "qr",
+                                  desc: "90 consecutive days billing coverage (Save 15%).",
+                                  tag: "Popular Tier"
+                                },
+                                {
+                                  id: "Yearly" as const,
+                                  price: "$299",
+                                  period: "yr",
+                                  desc: "365 consecutive days billing coverage (Save 35%).",
+                                  tag: "Best Value Plan"
+                                }
+                              ].map((item) => (
+                                <div
+                                  key={item.id}
+                                  onClick={() => setSubSelectedPlan(item.id)}
+                                  className={`p-3 rounded-xl border transition-all cursor-pointer flex flex-col justify-between ${
+                                    subSelectedPlan === item.id
+                                      ? "border-indigo-600 bg-indigo-50/20 dark:bg-indigo-950/10 shadow-sm"
+                                      : "border-slate-150 dark:border-slate-850 bg-slate-50/50 hover:bg-slate-50 dark:bg-slate-950/30 dark:hover:bg-slate-950/50"
+                                  }`}
+                                >
+                                  <div className="flex justify-between items-start">
+                                    <div>
+                                      <span className="text-xs font-bold text-slate-850 dark:text-slate-100">{item.id}</span>
+                                      <span className="ml-1.5 px-1.5 py-0.5 bg-indigo-100/60 dark:bg-indigo-950/60 text-[8px] font-bold uppercase rounded text-indigo-600 dark:text-indigo-400 tracking-wider">
+                                        {item.tag}
+                                      </span>
+                                    </div>
+                                    <div className="text-right">
+                                      <span className="text-xs font-extrabold text-indigo-600 dark:text-indigo-400">{item.price}</span>
+                                      <span className="text-[10px] text-slate-400">/{item.period}</span>
+                                    </div>
+                                  </div>
+                                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 pl-0.5 leading-relaxed">
+                                    {item.desc}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="pt-2">
+                            <label className="block text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2 pl-0.5">
+                              2. Confirm Authorization Access
+                            </label>
+                            <button
+                              type="button"
+                              onClick={handleApplyNewSubscriptionPlan}
+                              disabled={subApplying}
+                              className="w-full inline-flex items-center justify-center gap-2 py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow cursor-pointer transition-all disabled:opacity-50 hover:shadow-md"
+                            >
+                              {subApplying ? (
+                                <>
+                                  <RefreshCw className="animate-spin" size={14} />
+                                  <span>Enforcing {subSelectedPlan} Plan...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>🚀</span>
+                                  <span>Activate {subSelectedPlan} Subscription License</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200/50 dark:border-slate-850 rounded-2xl p-6 font-medium text-xs text-slate-500 dark:text-slate-400">

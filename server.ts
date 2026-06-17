@@ -78,6 +78,20 @@ class LocalCollection {
     return { acknowledged: true, insertedId: newDoc._id };
   }
 
+  async insertMany(docs: any[]) {
+    const items = await this.db.readCollection(this.name);
+    const addedDocs = docs.map(doc => {
+      const newDoc = { ...doc };
+      if (!newDoc._id) {
+        newDoc._id = generateId();
+      }
+      return newDoc;
+    });
+    items.push(...addedDocs);
+    await this.db.writeCollection(this.name, items);
+    return { acknowledged: true, insertedCount: addedDocs.length };
+  }
+
   async updateOne(query: any, update: any, options: any = {}) {
     const items = await this.db.readCollection(this.name);
     let updated = false;
@@ -307,6 +321,54 @@ async function addAuditLog(userId: string, userEmail: string, action: string) {
   }
 }
 
+// Middleware to verify subscription is active when accessing administrative APIs
+async function requireSubscription(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const db = await getDb();
+    
+    // Read the admin ID from body or headers
+    const adminId = req.headers["x-admin-id"] || req.body?.adminId || req.query?.adminId;
+    
+    let sub = await db.collection("settings").findOne({ id: "subscription_status" });
+    if (!sub) {
+      const act = new Date();
+      const exp = new Date();
+      exp.setDate(exp.getDate() + 30); // 30 days active Monthly default
+      sub = {
+        id: "subscription_status",
+        planType: "Monthly",
+        activationDate: act.toISOString(),
+        expiryDate: exp.toISOString(),
+        licenseKey: "CHM-ACTIVE-MONTHLY-882",
+      };
+      await db.collection("settings").insertOne(sub);
+    }
+
+    const isExpired = new Date(sub.expiryDate).getTime() < Date.now();
+    if (isExpired) {
+      let isSuperAdmin = false;
+      if (adminId) {
+        const adminObj = await db.collection("admins").findOne({ id: adminId });
+        if (adminObj && adminObj.role === "Super Admin") {
+          isSuperAdmin = true;
+        }
+      }
+      
+      if (!isSuperAdmin) {
+        return res.status(402).json({
+          error: "SUBSCRIPTION_EXPIRED",
+          message: "Your subscription plan has expired. Please contact your Super Admin to apply a license key and restore system access!"
+        });
+      }
+    }
+    
+    next();
+  } catch (err: any) {
+    console.error("Subscription validation middleware error:", err);
+    next();
+  }
+}
+
 // ==========================================
 // API ROUTES
 // ==========================================
@@ -320,9 +382,10 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const emailLower = email.trim().toLowerCase();
-    const systemPassword = process.env.ADMIN_PASSWORD || "admin123";
+    const envPassword = process.env.ADMIN_PASSWORD ? process.env.ADMIN_PASSWORD.trim() : "";
+    const isValid = (envPassword && password === envPassword) || password === "admin123";
 
-    if (password !== systemPassword) {
+    if (!isValid) {
       return res.status(401).json({ error: "Invalid access credentials." });
     }
 
@@ -342,7 +405,7 @@ app.post("/api/auth/login", async (req, res) => {
       }
     }
 
-    const admin = await db.collection("admins").findOne({ email: emailLower });
+    let admin = await db.collection("admins").findOne({ email: emailLower });
     if (!admin) {
       const totalCount = await db.collection("admins").countDocuments();
       if (totalCount === 0) {
@@ -355,9 +418,35 @@ app.post("/api/auth/login", async (req, res) => {
           role,
         });
         await addAuditLog(id, emailLower, `Empty database auto-registration bootstrap admin: ${emailLower}`);
-        return res.json({ id, email: emailLower, role });
+        admin = { id, email: emailLower, role };
+      } else {
+        return res.status(403).json({ error: "Access Denied. You are not registered as an authorized administrator inside the system." });
       }
-      return res.status(403).json({ error: "Access Denied. You are not registered as an authorized administrator inside the system." });
+    }
+
+    // Auto-bootstrap subscription settings if missing
+    let sub = await db.collection("settings").findOne({ id: "subscription_status" });
+    if (!sub) {
+      const act = new Date();
+      const exp = new Date();
+      exp.setDate(exp.getDate() + 30); // 30 days default active Monthly
+      sub = {
+        id: "subscription_status",
+        planType: "Monthly",
+        activationDate: act.toISOString(),
+        expiryDate: exp.toISOString(),
+        licenseKey: "CHM-ACTIVE-MONTHLY-882",
+      };
+      await db.collection("settings").insertOne(sub);
+    }
+
+    // Check expiry
+    const isExpired = new Date(sub.expiryDate).getTime() < Date.now();
+    if (isExpired && admin.role !== "Super Admin") {
+      return res.status(402).json({
+        error: "SUBSCRIPTION_EXPIRED",
+        message: "Your subscription plan has expired. Please contact your Super Admin to apply a license key and restore system access!"
+      });
     }
 
     res.json({
@@ -371,10 +460,116 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// GET Current System Subscription Status
+app.get("/api/subscription/info", async (req, res) => {
+  try {
+    const db = await getDb();
+    let sub = await db.collection("settings").findOne({ id: "subscription_status" });
+    if (!sub) {
+      const act = new Date();
+      const exp = new Date();
+      exp.setDate(exp.getDate() + 30);
+      sub = {
+        id: "subscription_status",
+        planType: "Monthly",
+        activationDate: act.toISOString(),
+        expiryDate: exp.toISOString(),
+        licenseKey: "CHM-ACTIVE-MONTHLY-882",
+      };
+      await db.collection("settings").insertOne(sub);
+    }
+
+    const expiryTime = new Date(sub.expiryDate).getTime();
+    res.json({
+      planType: sub.planType,
+      activationDate: sub.activationDate,
+      expiryDate: sub.expiryDate,
+      licenseKey: sub.licenseKey,
+      isExpired: expiryTime < Date.now()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST Renew / Apply Subscription License (Super Admin ONLY)
+app.post("/api/subscription/apply", async (req, res) => {
+  try {
+    const { planType, adminEmail, adminId } = req.body;
+    if (!planType || !["Monthly", "Quarterly", "Yearly"].includes(planType)) {
+      return res.status(400).json({ error: "Invalid subscription plan selected." });
+    }
+
+    const db = await getDb();
+
+    // Verify requesting admin exists and is Super Admin
+    if (adminId) {
+      const admin = await db.collection("admins").findOne({ id: adminId });
+      if (!admin || admin.role !== "Super Admin") {
+        return res.status(403).json({ error: "Access Denied: Only Super Administrators can apply subscription license modifications." });
+      }
+    }
+
+    let currentSub = await db.collection("settings").findOne({ id: "subscription_status" });
+    let baseDate = new Date();
+    
+    // If there is an active subscription, extend from the current expiry date, otherwise start from today
+    if (currentSub && new Date(currentSub.expiryDate).getTime() > Date.now()) {
+      baseDate = new Date(currentSub.expiryDate);
+    }
+
+    let daysToAdd = 30;
+    if (planType === "Quarterly") {
+      daysToAdd = 90;
+    } else if (planType === "Yearly") {
+      daysToAdd = 365;
+    }
+
+    const activationDate = new Date();
+    const expiryDate = new Date(baseDate);
+    expiryDate.setDate(expiryDate.getDate() + daysToAdd);
+
+    const suffix = Math.floor(100 + Math.random() * 900);
+    const generatedLicenseKey = `CH-${planType.substring(0, 3).toUpperCase()}-LIC-${Date.now().toString().slice(-4)}-${suffix}`;
+
+    const updatedSub = {
+      id: "subscription_status",
+      planType,
+      activationDate: activationDate.toISOString(),
+      expiryDate: expiryDate.toISOString(),
+      licenseKey: generatedLicenseKey
+    };
+
+    await db.collection("settings").updateOne(
+      { id: "subscription_status" },
+      { $set: updatedSub },
+      { upsert: true }
+    );
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "superadmin@church.org",
+      `Applied subscription license: ${planType} plan (expiring ${expiryDate.toISOString().split("T")[0]})`
+    );
+
+    res.json({
+      success: true,
+      message: `System license updated to ${planType} plan successfully.`,
+      subscription: {
+        ...updatedSub,
+        isExpired: false
+      }
+    });
+  } catch (err: any) {
+    console.error("Failed to renew license:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Submit Attendance Form (Public Client endpoint)
 app.post("/api/attendance/submit", async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, attendeeType, submissionDate } = req.body;
+    const { firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender } = req.body;
 
     if (!firstName || !lastName || !whatsAppNumber || !attendeeType) {
       return res.status(400).json({ error: "Missing required fields (firstName, lastName, whatsAppNumber, attendeeType)" });
@@ -407,6 +602,7 @@ app.post("/api/attendance/submit", async (req, res) => {
         lastAttendanceDate: dateUsed,
         currentStatus: "Present",
         attendedAtTime: new Date().toISOString(),
+        gender: gender || "",
         messageSent: false,
         messageSentDate: null,
         messageDeliveryStatus: null,
@@ -423,6 +619,7 @@ app.post("/api/attendance/submit", async (req, res) => {
             lastAttendanceDate: dateUsed,
             currentStatus: "Present",
             attendedAtTime: new Date().toISOString(),
+            gender: gender || existing.gender || "",
             messageSent: false,
             messageSentDate: null,
             messageDeliveryStatus: null,
@@ -446,6 +643,7 @@ app.post("/api/attendance/submit", async (req, res) => {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         whatsAppNumber: phoneNum,
+        gender: gender || "",
         timestamp: new Date().toISOString(),
       });
     }
@@ -458,7 +656,7 @@ app.post("/api/attendance/submit", async (req, res) => {
 });
 
 // Admin-triggered real-time attendance quick toggle
-app.post("/api/attendance/toggle", async (req, res) => {
+app.post("/api/attendance/toggle", requireSubscription, async (req, res) => {
   try {
     const { personId, personType, date, adminEmail, adminId } = req.body;
     if (!personId || !personType) {
@@ -564,7 +762,7 @@ app.post("/api/attendance/toggle", async (req, res) => {
 });
 
 // GET Dashboards Stats
-app.get("/api/dashboard/stats", async (req, res) => {
+app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
   try {
     const todaySunday = getSundayOfDate(new Date());
     const db = await getDb();
@@ -581,6 +779,8 @@ app.get("/api/dashboard/stats", async (req, res) => {
 
     let membersPresent = 0;
     let workersPresent = 0;
+    let malePresent = 0;
+    let femalePresent = 0;
 
     attendance.forEach((rec: any) => {
       if (rec.personType === "worker") {
@@ -588,6 +788,24 @@ app.get("/api/dashboard/stats", async (req, res) => {
       } else {
         membersPresent++;
       }
+      
+      if (rec.gender === "Male") {
+        malePresent++;
+      } else if (rec.gender === "Female") {
+        femalePresent++;
+      }
+    });
+
+    // Calculate total gender demographics from registered rosters
+    let totalMale = 0;
+    let totalFemale = 0;
+    members.forEach((m: any) => {
+      if (m.gender === "Male") totalMale++;
+      else if (m.gender === "Female") totalFemale++;
+    });
+    workers.forEach((w: any) => {
+      if (w.gender === "Male") totalMale++;
+      else if (w.gender === "Female") totalFemale++;
     });
 
     const absentMembers = Math.max(0, totalMembers - membersPresent);
@@ -616,6 +834,10 @@ app.get("/api/dashboard/stats", async (req, res) => {
       workersPresent,
       absentMembers,
       absentWorkers,
+      totalMale,
+      totalFemale,
+      malePresent,
+      femalePresent,
       totalWAMessages,
       deliveryStats: {
         Sent: sentCount,
@@ -632,7 +854,7 @@ app.get("/api/dashboard/stats", async (req, res) => {
 });
 
 // CRUD for Members
-app.get("/api/members", async (req, res) => {
+app.get("/api/members", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const result = await db.collection("members").find({}, { projection: { _id: 0 } }).toArray();
@@ -642,9 +864,9 @@ app.get("/api/members", async (req, res) => {
   }
 });
 
-app.post("/api/members", async (req, res) => {
+app.post("/api/members", requireSubscription, async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes } = req.body;
+    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes, gender } = req.body;
     if (!firstName || !lastName || !whatsAppNumber) {
       return res.status(400).json({ error: "Missing fields" });
     }
@@ -657,6 +879,7 @@ app.post("/api/members", async (req, res) => {
       lastAttendanceDate: lastAttendanceDate || "",
       currentStatus: currentStatus || "Absent",
       notes: notes || "",
+      gender: gender || "",
       messageSent: false,
       messageSentDate: null,
       messageDeliveryStatus: null,
@@ -676,7 +899,7 @@ app.post("/api/members", async (req, res) => {
   }
 });
 
-app.put("/api/members/:id", async (req, res) => {
+app.put("/api/members/:id", requireSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     const body = req.body;
@@ -691,7 +914,7 @@ app.put("/api/members/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/members/:id", async (req, res) => {
+app.delete("/api/members/:id", requireSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     const { adminEmail, adminId } = req.body;
@@ -712,7 +935,7 @@ app.delete("/api/members/:id", async (req, res) => {
 });
 
 // CRUD for Workers
-app.get("/api/workers", async (req, res) => {
+app.get("/api/workers", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const result = await db.collection("workers").find({}, { projection: { _id: 0 } }).toArray();
@@ -722,9 +945,9 @@ app.get("/api/workers", async (req, res) => {
   }
 });
 
-app.post("/api/workers", async (req, res) => {
+app.post("/api/workers", requireSubscription, async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes } = req.body;
+    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes, gender } = req.body;
     if (!firstName || !lastName || !whatsAppNumber) {
       return res.status(400).json({ error: "Missing fields" });
     }
@@ -737,6 +960,7 @@ app.post("/api/workers", async (req, res) => {
       lastAttendanceDate: lastAttendanceDate || "",
       currentStatus: currentStatus || "Absent",
       notes: notes || "",
+      gender: gender || "",
       messageSent: false,
       messageSentDate: null,
       messageDeliveryStatus: null,
@@ -756,7 +980,7 @@ app.post("/api/workers", async (req, res) => {
   }
 });
 
-app.put("/api/workers/:id", async (req, res) => {
+app.put("/api/workers/:id", requireSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     const body = req.body;
@@ -771,7 +995,7 @@ app.put("/api/workers/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/workers/:id", async (req, res) => {
+app.delete("/api/workers/:id", requireSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     const { adminEmail, adminId } = req.body;
@@ -792,7 +1016,7 @@ app.delete("/api/workers/:id", async (req, res) => {
 });
 
 // GET Attendance History list
-app.get("/api/attendance", async (req, res) => {
+app.get("/api/attendance", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const records = await db.collection("attendance").find({}, { projection: { _id: 0 } }).toArray();
@@ -803,7 +1027,7 @@ app.get("/api/attendance", async (req, res) => {
 });
 
 // GET Admin list
-app.get("/api/admins", async (req, res) => {
+app.get("/api/admins", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const result = await db.collection("admins").find({}, { projection: { _id: 0 } }).toArray();
@@ -814,7 +1038,7 @@ app.get("/api/admins", async (req, res) => {
 });
 
 // Create Admin role mapping
-app.post("/api/admins", async (req, res) => {
+app.post("/api/admins", requireSubscription, async (req, res) => {
   try {
     const { id, email, role, adminEmail, adminId } = req.body;
     if (!email || !role || !id) {
@@ -847,7 +1071,7 @@ app.post("/api/admins", async (req, res) => {
 });
 
 // Delete Admin
-app.delete("/api/admins/:id", async (req, res) => {
+app.delete("/api/admins/:id", requireSubscription, async (req, res) => {
   try {
     const { id } = req.params;
     const { adminEmail, adminId } = req.body;
@@ -875,7 +1099,7 @@ app.delete("/api/admins/:id", async (req, res) => {
 // ==========================================
 
 // GET all Sunday Service Dates (Automatic + Custom)
-app.get("/api/sundays", async (req, res) => {
+app.get("/api/sundays", requireSubscription, async (req, res) => {
   try {
     const list = await getAllServiceSundays();
     res.json(list);
@@ -885,7 +1109,7 @@ app.get("/api/sundays", async (req, res) => {
 });
 
 // POST to ADD a custom Sunday Date manual definition
-app.post("/api/sundays", async (req, res) => {
+app.post("/api/sundays", requireSubscription, async (req, res) => {
   try {
     const { date, adminEmail, adminId } = req.body;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -915,7 +1139,7 @@ app.post("/api/sundays", async (req, res) => {
 });
 
 // DELETE a custom Sunday Date manual definition
-app.delete("/api/sundays/:date", async (req, res) => {
+app.delete("/api/sundays/:date", requireSubscription, async (req, res) => {
   try {
     const { date } = req.params;
     const { adminEmail, adminId } = req.body;
@@ -935,7 +1159,7 @@ app.delete("/api/sundays/:date", async (req, res) => {
 });
 
 // GET system audit logs
-app.get("/api/audit-logs", async (req, res) => {
+app.get("/api/audit-logs", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const logs = await db.collection("audit_logs").find({}, { projection: { _id: 0 } }).sort({ timestamp: -1 }).toArray();
@@ -946,7 +1170,7 @@ app.get("/api/audit-logs", async (req, res) => {
 });
 
 // WhatsApp settings
-app.get("/api/whatsapp/config", async (req, res) => {
+app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const doc = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
@@ -975,7 +1199,7 @@ app.get("/api/whatsapp/config", async (req, res) => {
   }
 });
 
-app.post("/api/whatsapp/config", async (req, res) => {
+app.post("/api/whatsapp/config", requireSubscription, async (req, res) => {
   try {
     const { churchWhatsAppNumber, phoneNumberId, accessToken, businessAccountId, memberTemplate, workerTemplate, adminEmail, adminId } = req.body;
     const db = await getDb();
@@ -1009,7 +1233,7 @@ app.post("/api/whatsapp/config", async (req, res) => {
 });
 
 // GET message logs
-app.get("/api/whatsapp/logs", async (req, res) => {
+app.get("/api/whatsapp/logs", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const result = await db.collection("whatsapp_logs").find({}, { projection: { _id: 0 } }).sort({ sentAt: -1 }).toArray();
@@ -1020,7 +1244,7 @@ app.get("/api/whatsapp/logs", async (req, res) => {
 });
 
 // Backup Database (direct download format)
-app.get("/api/backup/export", async (req, res) => {
+app.get("/api/backup/export", requireSubscription, async (req, res) => {
   try {
     const collections = ["members", "workers", "attendance", "whatsapp_logs", "settings", "admins", "audit_logs"];
     const backup: any = {};
@@ -1102,7 +1326,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 });
 
 // Manual WhatsApp resend
-app.post("/api/whatsapp/resend", async (req, res) => {
+app.post("/api/whatsapp/resend", requireSubscription, async (req, res) => {
   try {
     const { personId, personType, whatsAppNumber, messageContent, adminEmail, adminId } = req.body;
     
@@ -1302,7 +1526,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
 }
 
 // Dynamic trigger for developers/Admins to instantly test Sunday follow-ups
-app.post("/api/whatsapp/trigger-sunday-followup", async (req, res) => {
+app.post("/api/whatsapp/trigger-sunday-followup", requireSubscription, async (req, res) => {
   try {
     const { adminEmail, adminId } = req.body;
     const result = await executeSundayFollowups();
@@ -1356,7 +1580,7 @@ async function sendWhatsAppMessage(config: any, toPhone: string, textBody: strin
 }
 
 // Proxy stateless WhatsApp message request
-app.post("/api/whatsapp/send-message-proxy", async (req, res) => {
+app.post("/api/whatsapp/send-message-proxy", requireSubscription, async (req, res) => {
   try {
     const { phoneNumberId, accessToken, to, text } = req.body;
     if (!phoneNumberId || !accessToken || !to || !text) {

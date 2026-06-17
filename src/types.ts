@@ -6,6 +6,7 @@ export interface Member {
   lastAttendanceDate: string; // YYYY-MM-DD
   currentStatus: "Present" | "Absent";
   attendedAtTime?: string | null; // checkin timestamp ISO or formatted
+  gender?: "Male" | "Female" | string;
   messageSent: boolean;
   messageSentDate: string | null; // ISO String or Date
   messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
@@ -19,6 +20,7 @@ export interface Worker {
   lastAttendanceDate: string; // YYYY-MM-DD
   currentStatus: "Present" | "Absent";
   attendedAtTime?: string | null; // checkin timestamp ISO or formatted
+  gender?: "Male" | "Female" | string;
   messageSent: boolean;
   messageSentDate: string | null;
   messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
@@ -32,6 +34,7 @@ export interface AttendanceRecord {
   firstName: string;
   lastName: string;
   whatsAppNumber: string;
+  gender?: "Male" | "Female" | string;
   timestamp: string; // ISO 8601 string of when they submitted
 }
 

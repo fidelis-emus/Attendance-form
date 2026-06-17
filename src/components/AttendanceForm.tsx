@@ -11,6 +11,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
   const [lastName, setLastName] = useState("");
   const [whatsAppNumber, setWhatsAppNumber] = useState("");
   const [role, setRole] = useState<"member" | "worker">("member");
+  const [gender, setGender] = useState<"Male" | "Female" | "">("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -26,7 +27,50 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
     const params = new URLSearchParams(window.location.search);
     const dateParam = params.get("date");
     if (dateParam) {
-      setServiceDate(dateParam);
+      if (dateParam.startsWith("month-")) {
+        // Monthly QR code format: month-YYYY-MM
+        try {
+          const monthStr = dateParam.replace("month-", ""); // e.g. "2026-06"
+          const parts = monthStr.split("-");
+          const year = parseInt(parts[0], 10);
+          const monthIdx = parseInt(parts[1], 10) - 1; // 0-indexed
+
+          const today = new Date();
+          if (today.getFullYear() === year && today.getMonth() === monthIdx) {
+            // If scanning within the same month, calculate Sunday of this week
+            const target = new Date(today);
+            const day = target.getDay();
+            target.setDate(target.getDate() - day); // Goes back to the most recent Sunday
+            
+            // Format to YYYY-MM-DD cleanly using timezone-safe format
+            const y = target.getFullYear();
+            const m = String(target.getMonth() + 1).padStart(2, "0");
+            const d = String(target.getDate()).padStart(2, "0");
+            setServiceDate(`${y}-${m}-${d}`);
+          } else {
+            // Fallback to first Sunday of that specific month
+            const firstOfM = new Date(year, monthIdx, 1);
+            const firstDayOfWeek = firstOfM.getDay();
+            const diff = firstDayOfWeek === 0 ? 0 : 7 - firstDayOfWeek;
+            const firstSunday = new Date(firstOfM);
+            firstSunday.setDate(firstOfM.getDate() + diff);
+            
+            const y = firstSunday.getFullYear();
+            const m = String(firstSunday.getMonth() + 1).padStart(2, "0");
+            const d = String(firstSunday.getDate()).padStart(2, "0");
+            setServiceDate(`${y}-${m}-${d}`);
+          }
+        } catch (err) {
+          console.error("Error parsing monthly QR date:", err);
+          // Standard backup
+          const today = new Date();
+          const day = today.getDay();
+          today.setDate(today.getDate() - day);
+          setServiceDate(today.toISOString().split("T")[0]);
+        }
+      } else {
+        setServiceDate(dateParam);
+      }
     } else {
       // Find closest/most recent Sunday of today
       const today = new Date();
@@ -57,6 +101,12 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
       return;
     }
 
+    if (!gender) {
+      setError("Please select a gender (Male or Female) to submit your attendance.");
+      setLoading(false);
+      return;
+    }
+
     // Basic WhatsApp validation
     const phoneDigits = whatsAppNumber.replace(/\D/g, "");
     if (phoneDigits.length < 8) {
@@ -75,6 +125,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
           whatsAppNumber: whatsAppNumber,
           attendeeType: role,
           submissionDate: serviceDate,
+          gender: gender,
         }),
       });
 
@@ -292,6 +343,68 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
                       className="rounded border-slate-300 text-violet-500 focus:ring-violet-500 pointer-events-none"
                     />
                     <span className="text-[10px] font-semibold text-slate-400">Selected</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* MUTUALLY EXCLUSIVE GENDER SELECTION: CHECKBOX COPIES AS CARD BUTTONS */}
+            <div>
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
+                Gender / Sex <span className="text-rose-500">*</span>
+              </label>
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  type="button"
+                  id="gender-male-btn"
+                  onClick={() => setGender("Male")}
+                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 ${
+                    gender === "Male"
+                      ? "bg-blue-500/5 text-blue-600 dark:text-blue-400 border-blue-500 scale-[0.98] ring-2 ring-blue-500/15"
+                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
+                  }`}
+                >
+                  <span className="text-2xl mb-1.5">🧔</span>
+                  <span className="text-sm font-bold tracking-tight">Male</span>
+                  <div className="mt-1.5 flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      id="gender-male-checkbox"
+                      checked={gender === "Male"}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        setGender("Male");
+                      }}
+                      className="rounded border-slate-300 text-blue-500 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span className="text-[10px] font-semibold text-slate-400">Click to Select</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  id="gender-female-btn"
+                  onClick={() => setGender("Female")}
+                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 ${
+                    gender === "Female"
+                      ? "bg-pink-500/5 text-pink-600 dark:text-pink-400 border-pink-500 scale-[0.98] ring-2 ring-pink-500/15"
+                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
+                  }`}
+                >
+                  <span className="text-2xl mb-1.5">👩</span>
+                  <span className="text-sm font-bold tracking-tight">Female</span>
+                  <div className="mt-1.5 flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      id="gender-female-checkbox"
+                      checked={gender === "Female"}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        setGender("Female");
+                      }}
+                      className="rounded border-slate-300 text-pink-500 focus:ring-pink-500 cursor-pointer"
+                    />
+                    <span className="text-[10px] font-semibold text-slate-400">Click to Select</span>
                   </div>
                 </button>
               </div>

@@ -1,0 +1,14 @@
+# ----------------------------------------------------------------------
+# Apache Web Server Routing Context for api.php
+# ----------------------------------------------------------------------
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Do not perturb true folders or files
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    
+    # Smooth rewrite of /api/resource requests directly into api.php
+    RewriteRule ^api/(.*)$ api.php/$1 [QSA,L]
+</IfModule>
