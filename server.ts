@@ -567,6 +567,7 @@ app.post("/api/subscription/apply", async (req, res) => {
 });
 
 // Submit Attendance Form (Public Client endpoint)
+// Submit Attendance Form (Public Client endpoint)
 app.post("/api/attendance/submit", async (req, res) => {
   try {
     const { firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender } = req.body;
@@ -576,9 +577,7 @@ app.post("/api/attendance/submit", async (req, res) => {
     }
 
     const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
-    const personType = attendeeType === "worker" ? "worker" : "member";
-    const collectionName = personType === "worker" ? "workers" : "members";
-
+    
     // Format phone with + if missing but numeric
     let phoneNum = whatsAppNumber.trim();
     if (!phoneNum.startsWith("+") && /^\d+$/.test(phoneNum)) {
@@ -587,13 +586,25 @@ app.post("/api/attendance/submit", async (req, res) => {
 
     const db = await getDb();
     
-    // Check if duplicate in respective collections
-    const existing = await db.collection(collectionName).findOne({ whatsAppNumber: phoneNum });
+    // Find if the person already exists in EITHER collection to prevent duplicates
+    let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
+    let personType = "member";
+    if (!existing) {
+      existing = await db.collection("workers").findOne({ whatsAppNumber: phoneNum });
+      if (existing) {
+        personType = "worker";
+      }
+    } else {
+      personType = "member";
+    }
 
     let personId = "";
     if (!existing) {
-      // Create new profile record
+      // First-Time Attendance
+      personType = attendeeType === "worker" ? "worker" : "member";
+      const collectionName = personType === "worker" ? "workers" : "members";
       personId = generateId();
+      
       await db.collection(collectionName).insertOne({
         id: personId,
         firstName: firstName.trim(),
@@ -607,34 +618,8 @@ app.post("/api/attendance/submit", async (req, res) => {
         messageSentDate: null,
         messageDeliveryStatus: null,
       });
-    } else {
-      // Update existing profile details
-      personId = existing.id;
-      await db.collection(collectionName).updateOne(
-        { id: personId },
-        {
-          $set: {
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
-            lastAttendanceDate: dateUsed,
-            currentStatus: "Present",
-            attendedAtTime: new Date().toISOString(),
-            gender: gender || existing.gender || "",
-            messageSent: false,
-            messageSentDate: null,
-            messageDeliveryStatus: null,
-          }
-        }
-      );
-    }
 
-    // Record Sunday Attendance roster transaction
-    const checkDupRef = await db.collection("attendance").findOne({
-      date: dateUsed,
-      personId: personId
-    });
-
-    if (!checkDupRef) {
+      // Insert Attendance transaction record
       await db.collection("attendance").insertOne({
         id: generateId(),
         date: dateUsed,
@@ -646,11 +631,281 @@ app.post("/api/attendance/submit", async (req, res) => {
         gender: gender || "",
         timestamp: new Date().toISOString(),
       });
-    }
 
-    res.json({ message: "God Bless you. Enjoy the rest of the service in God's presence." });
+      return res.json({
+        status: "success_new",
+        personId,
+        personType,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        message: "God Bless you. Enjoy the rest of the service in God's presence."
+      });
+    } else {
+      // Returning Member or Worker
+      personId = existing.id;
+      const collectionName = personType === "worker" ? "workers" : "members";
+
+      // Check if duplicate attendance roster exists for the same Sunday
+      const checkDupRef = await db.collection("attendance").findOne({
+        date: dateUsed,
+        personId: personId
+      });
+
+      if (checkDupRef) {
+        return res.json({
+          status: "already_checked_in",
+          personId,
+          personType,
+          firstName: existing.firstName,
+          lastName: existing.lastName,
+          message: "You have already taken attendance for today. God Bless you."
+        });
+      }
+
+      // Update last attendance date
+      await db.collection(collectionName).updateOne(
+        { id: personId },
+        {
+          $set: {
+            firstName: firstName.trim(),
+            lastName: lastName.trim(),
+            lastAttendanceDate: dateUsed,
+            currentStatus: "Present",
+            attendedAtTime: new Date().toISOString(),
+            gender: gender || existing.gender || "",
+          }
+        }
+      );
+
+      // Record Sunday Attendance roster transaction
+      await db.collection("attendance").insertOne({
+        id: generateId(),
+        date: dateUsed,
+        personId,
+        personType,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        whatsAppNumber: phoneNum,
+        gender: gender || existing.gender || "",
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({
+        status: "success_returning",
+        personId,
+        personType,
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        message: `Welcome back, ${existing.firstName}. Your attendance for today has been recorded successfully. God Bless you and enjoy the rest of the service in God's presence.`
+      });
+    }
   } catch (err: any) {
     console.error("Attendance submission failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auto Check-in endpoint for Returning scan triggers
+app.post("/api/attendance/auto-checkin", async (req, res) => {
+  try {
+    const { personId, personType, submissionDate } = req.body;
+    if (!personId) {
+      return res.status(400).json({ error: "Missing personId" });
+    }
+
+    const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
+    const db = await getDb();
+
+    // Look up in members
+    let existing = await db.collection("members").findOne({ id: personId });
+    let resolvedType = "member";
+    if (!existing) {
+      existing = await db.collection("workers").findOne({ id: personId });
+      if (existing) {
+        resolvedType = "worker";
+      }
+    } else {
+      resolvedType = "member";
+    }
+
+    if (!existing) {
+      return res.status(404).json({ error: "Profile not found. Please register first." });
+    }
+
+    const collectionName = resolvedType === "worker" ? "workers" : "members";
+
+    // Check duplicate check-in today
+    const checkDupRef = await db.collection("attendance").findOne({
+      date: dateUsed,
+      personId: personId
+    });
+
+    if (checkDupRef) {
+      return res.json({
+        status: "already_checked_in",
+        personId,
+        personType: resolvedType,
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        message: "You have already taken attendance for today. God Bless you."
+      });
+    }
+
+    // Update profile
+    await db.collection(collectionName).updateOne(
+      { id: personId },
+      {
+        $set: {
+          lastAttendanceDate: dateUsed,
+          currentStatus: "Present",
+          attendedAtTime: new Date().toISOString()
+        }
+      }
+    );
+
+    // Record attendance roster transaction
+    await db.collection("attendance").insertOne({
+      id: generateId(),
+      date: dateUsed,
+      personId,
+      personType: resolvedType,
+      firstName: existing.firstName,
+      lastName: existing.lastName,
+      whatsAppNumber: existing.whatsAppNumber,
+      gender: existing.gender || "",
+      timestamp: new Date().toISOString()
+    });
+
+    return res.json({
+      status: "success_returning",
+      personId,
+      personType: resolvedType,
+      firstName: existing.firstName,
+      lastName: existing.lastName,
+      message: `Welcome back, ${existing.firstName}. Your attendance for today has been recorded successfully. God Bless you and enjoy the rest of the service in God's presence.`
+    });
+  } catch (err: any) {
+    console.error("Auto check-in failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk Attendance Import Endpoint
+app.post("/api/attendance/import", requireSubscription, async (req, res) => {
+  try {
+    const { attendees, adminEmail, adminId } = req.body;
+    if (!attendees || !Array.isArray(attendees)) {
+      return res.status(400).json({ error: "Missing attendees array" });
+    }
+
+    const db = await getDb();
+    const defaultSunday = getSundayOfDate(new Date());
+
+    let createdCount = 0;
+    let attendanceCount = 0;
+
+    for (const item of attendees) {
+      if (!item.firstName || !item.lastName || !item.whatsAppNumber) {
+        continue; // skip malformed records
+      }
+
+      // Format WhatsApp number cleanly
+      let phoneNum = String(item.whatsAppNumber).trim();
+      if (!phoneNum.startsWith("+") && /^\d+$/.test(phoneNum)) {
+        phoneNum = "+" + phoneNum;
+      }
+
+      const genderOption = item.gender === "Male" || item.gender === "Female" ? item.gender : "";
+      const inputRole = item.role === "worker" ? "worker" : "member";
+      const targetDate = item.date ? item.date.trim() : defaultSunday;
+      const statusOption = item.currentStatus === "Absent" ? "Absent" : "Present";
+
+      // 1. Seek existing registration in either collection
+      let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
+      let resolvedType = "member";
+      if (!existing) {
+        existing = await db.collection("workers").findOne({ whatsAppNumber: phoneNum });
+        if (existing) {
+          resolvedType = "worker";
+        }
+      }
+
+      let personId = "";
+      if (!existing) {
+        // Create new roster profile
+        personId = generateId();
+        resolvedType = inputRole;
+        const collectionName = resolvedType === "worker" ? "workers" : "members";
+
+        await db.collection(collectionName).insertOne({
+          id: personId,
+          firstName: item.firstName.trim(),
+          lastName: item.lastName.trim(),
+          whatsAppNumber: phoneNum,
+          lastAttendanceDate: statusOption === "Present" ? targetDate : "",
+          currentStatus: statusOption,
+          notes: "Imported via attendance spreadsheet",
+          gender: genderOption,
+          messageSent: false,
+          messageSentDate: null,
+          messageDeliveryStatus: null,
+        });
+        createdCount++;
+      } else {
+        personId = existing.id;
+        // Update details (e.g. gender if missing, last attendance date if newer)
+        const collectionName = resolvedType === "worker" ? "workers" : "members";
+        const updateFields: any = {};
+        if (!existing.gender && genderOption) {
+          updateFields.gender = genderOption;
+        }
+        if (statusOption === "Present") {
+          updateFields.currentStatus = "Present";
+          updateFields.lastAttendanceDate = targetDate;
+        }
+        if (Object.keys(updateFields).length > 0) {
+          await db.collection(collectionName).updateOne({ id: personId }, { $set: updateFields });
+        }
+      }
+
+      // 2. Insert attendance record for specific Date if present state and not duplicated
+      if (statusOption === "Present") {
+        const checkDup = await db.collection("attendance").findOne({
+          date: targetDate,
+          personId: personId
+        });
+
+        if (!checkDup) {
+          await db.collection("attendance").insertOne({
+            id: generateId(),
+            date: targetDate,
+            personId,
+            personType: resolvedType,
+            firstName: item.firstName.trim(),
+            lastName: item.lastName.trim(),
+            whatsAppNumber: phoneNum,
+            gender: genderOption || (existing ? existing.gender : "") || "",
+            timestamp: new Date().toISOString()
+          });
+          attendanceCount++;
+        }
+      }
+    }
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Bulk imported ${attendees.length} attendance records`
+    );
+
+    res.json({
+      success: true,
+      createdCount,
+      attendanceCount,
+      message: `Import complete. Created ${createdCount} new profiles and logged ${attendanceCount} Sunday attendance entries.`
+    });
+  } catch (err: any) {
+    console.error("Bulk attendance import error:", err);
     res.status(500).json({ error: err.message });
   }
 });

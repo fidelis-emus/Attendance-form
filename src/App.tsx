@@ -24,6 +24,7 @@ import {
   PhoneCall,
   Lock,
   RefreshCw,
+  Upload,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -145,8 +146,15 @@ export default function App() {
     lastName: "",
     whatsAppNumber: "",
     currentStatus: "Absent" as "Present" | "Absent",
+    gender: "" as "Male" | "Female" | "",
     notes: "",
   });
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRawText, setImportRawText] = useState("");
+  const [importFileError, setImportFileError] = useState<string | null>(null);
+  const [importingStatus, setImportingStatus] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   const [showAddAdminModal, setShowAddAdminModal] = useState(false);
   const [newAdmin, setNewAdmin] = useState({
@@ -480,6 +488,7 @@ export default function App() {
           lastName: newPerson.lastName.trim(),
           whatsAppNumber: phoneNum,
           currentStatus: newPerson.currentStatus || "Absent",
+          gender: newPerson.gender,
           notes: newPerson.notes.trim(),
           lastAttendanceDate: "",
           adminEmail: user?.email,
@@ -499,11 +508,105 @@ export default function App() {
         lastName: "",
         whatsAppNumber: "",
         currentStatus: "Absent",
+        gender: "",
         notes: "",
       });
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
+    }
+  };
+
+  // Upload/import spreadsheet file as raw text
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result;
+      if (typeof text === "string") {
+        setImportRawText(text);
+        setImportFileError(null);
+        setImportResult(null);
+      }
+    };
+    reader.onerror = () => {
+      setImportFileError("Failed to read the selected file.");
+    };
+    reader.readAsText(file);
+  };
+
+  // Process and POST raw CSV/TSV parsed attendees
+  const handleImportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!importRawText.trim()) {
+      setImportFileError("Please copy-paste or upload CSV data first.");
+      return;
+    }
+
+    setImportingStatus(true);
+    setImportFileError(null);
+    setImportResult(null);
+
+    try {
+      const parsedAttendees: any[] = [];
+      const lines = importRawText.split(/\r?\n/);
+
+      for (const line of lines) {
+        const row = line.trim();
+        if (!row) continue;
+
+        // Split by comma or tab
+        const cells = row.includes("\t") ? row.split("\t") : row.split(",");
+        const cleanedCells = cells.map(c => c.replace(/^["']|["']$/g, "").trim());
+
+        // Skip header lines
+        const first = String(cleanedCells[0] || "").toLowerCase();
+        if (first.includes("first") || first.includes("name") || first.includes("phone")) {
+          continue;
+        }
+
+        if (cleanedCells.length >= 3) {
+          const attendee = {
+            firstName: cleanedCells[0],
+            lastName: cleanedCells[1],
+            whatsAppNumber: cleanedCells[2],
+            gender: cleanedCells[3] || "", // Male / Female
+            role: String(cleanedCells[4] || "member").toLowerCase().replace(/s$/, ""), // member / worker
+            date: cleanedCells[5] || "", // optional YYYY-MM-DD
+            currentStatus: cleanedCells[6] || "Present", // optional Present / Absent
+          };
+          parsedAttendees.push(attendee);
+        }
+      }
+
+      if (parsedAttendees.length === 0) {
+        throw new Error("Could not parse any valid rows. Each row must be formatted as: First Name, Last Name, WhatsApp number.");
+      }
+
+      const response = await fetch("/api/attendance/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          attendees: parsedAttendees,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      const resData = await response.json();
+      if (!response.ok) {
+        throw new Error(resData.error || "Failed to complete CSV import.");
+      }
+
+      setImportResult(resData.message);
+      addNotification("Roster database and attendance imported successfully!", "success");
+      await loadAllAdminData();
+    } catch (err: any) {
+      setImportFileError(err.message);
+    } finally {
+      setImportingStatus(false);
     }
   };
 
@@ -1530,6 +1633,19 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
+                          setImportRawText("");
+                          setImportFileError(null);
+                          setImportResult(null);
+                          setShowImportModal(true);
+                        }}
+                        className="py-2 px-3.5 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-955/40 text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                      >
+                        <Upload size={14} /> Import Attendance
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
                           if (registerSubTab === "history") {
                             const filtered = getFilteredHistory();
                             const rows = filtered.map((item) => [
@@ -1670,6 +1786,7 @@ export default function App() {
                               <th className="py-3 px-4">Attendee Name</th>
                               <th className="py-3 px-4">Category</th>
                               <th className="py-3 px-4">WhatsApp Phone</th>
+                              <th className="py-3 px-4">Gender</th>
                               <th className="py-3 px-4">Registered At</th>
                             </tr>
                           </thead>
@@ -1677,7 +1794,7 @@ export default function App() {
                             {getFilteredHistory().length === 0 ? (
                               <tr>
                                 <td
-                                  colSpan={5}
+                                  colSpan={6}
                                   className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed"
                                 >
                                   No transaction records found matching filters.
@@ -1709,6 +1826,19 @@ export default function App() {
                                   <td className="py-3 px-4 font-mono text-xs text-slate-505">
                                     {record.whatsAppNumber}
                                   </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        record.gender === "Male"
+                                          ? "bg-blue-55 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400"
+                                          : record.gender === "Female"
+                                            ? "bg-pink-50 text-pink-700 dark:bg-pink-950/30 dark:text-pink-400"
+                                            : "bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                      }`}
+                                    >
+                                      {record.gender || "Unspecified"}
+                                    </span>
+                                  </td>
                                   <td className="py-3 px-4 text-xs font-mono">
                                     {new Date(
                                       record.timestamp,
@@ -1727,6 +1857,7 @@ export default function App() {
                             <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
                               <th className="py-3 px-4">Roster Full Name</th>
                               <th className="py-3 px-4">WhatsApp Phone</th>
+                              <th className="py-3 px-4">Gender</th>
                               <th className="py-3 px-4">
                                 Latest Attendance Sunday
                               </th>
@@ -1746,7 +1877,7 @@ export default function App() {
                             ).length === 0 ? (
                               <tr>
                                 <td
-                                  colSpan={7}
+                                  colSpan={8}
                                   className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed"
                                 >
                                   Roster is currently empty. Define records
@@ -1781,6 +1912,19 @@ export default function App() {
                                   </td>
                                   <td className="py-3 px-4 font-mono text-xs">
                                     {person.whatsAppNumber}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        person.gender === "Male"
+                                          ? "bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400"
+                                          : person.gender === "Female"
+                                            ? "bg-pink-50 text-pink-700 dark:bg-pink-950/20 dark:text-pink-400"
+                                            : "bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                      }`}
+                                    >
+                                      {person.gender || "Unspecified"}
+                                    </span>
                                   </td>
                                   <td className="py-3 px-4">
                                     <span className="font-mono text-xs font-bold text-slate-500 dark:text-slate-400">
@@ -3167,35 +3311,55 @@ export default function App() {
                       />
                     </div>
 
+                    <div>
+                      <span className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Role Category
+                      </span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setNewPersonType("member")}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
+                            newPersonType === "member"
+                              ? "bg-blue-600 border-blue-600 text-white"
+                              : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-850"
+                          }`}
+                        >
+                          Member
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewPersonType("worker")}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
+                            newPersonType === "worker"
+                              ? "bg-violet-600 border-violet-600 text-white"
+                              : "bg-slate-50 dark:bg-slate-950 text-slate-505 border-slate-200 dark:border-slate-850"
+                          }`}
+                        >
+                          Worker
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-4 pt-2">
                       <div>
                         <span className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                          Role Category
+                          Gender
                         </span>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setNewPersonType("member")}
-                            className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
-                              newPersonType === "member"
-                                ? "bg-blue-600 border-blue-600 text-white"
-                                : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-850"
-                            }`}
-                          >
-                            Member
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setNewPersonType("worker")}
-                            className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
-                              newPersonType === "worker"
-                                ? "bg-violet-600 border-violet-600 text-white"
-                                : "bg-slate-50 dark:bg-slate-950 text-slate-505 border-slate-200 dark:border-slate-850"
-                            }`}
-                          >
-                            Worker
-                          </button>
-                        </div>
+                        <select
+                          value={newPerson.gender}
+                          onChange={(e: any) =>
+                            setNewPerson({
+                              ...newPerson,
+                              gender: e.target.value as "Male" | "Female" | "",
+                            })
+                          }
+                          className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-700 dark:text-slate-100 font-bold text-xs focus:outline-none"
+                        >
+                          <option value="">Select Gender</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                        </select>
                       </div>
 
                       <div>
@@ -3210,7 +3374,7 @@ export default function App() {
                               currentStatus: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-100 font-bold text-xs focus:outline-none"
+                          className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-700 dark:text-slate-100 font-bold text-xs focus:outline-none"
                         >
                           <option value="Absent">Absent</option>
                           <option value="Present">Present</option>
@@ -3241,6 +3405,102 @@ export default function App() {
                       className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition-all shadow cursor-pointer uppercase"
                     >
                       Save person record
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* BULK IMPORT ATTENDANCE MODAL */}
+            {showImportModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs no-print">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl relative">
+                  <div className="py-4 px-6 bg-emerald-800 text-white font-display font-bold flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <Upload size={18} />
+                      Import Existing Attendance
+                    </span>
+                    <button
+                      onClick={() => setShowImportModal(false)}
+                      className="text-emerald-200 hover:text-white cursor-pointer select-none text-sm"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                  <form onSubmit={handleImportSubmit} className="p-6 space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        Option 1: Choose a CSV / Excel Text File
+                      </label>
+                      <input
+                        type="file"
+                        accept=".csv,.tsv,.txt"
+                        onChange={handleFileChange}
+                        className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 dark:file:bg-emerald-950/30 file:text-emerald-700 dark:file:text-emerald-400 hover:file:bg-emerald-100 cursor-pointer"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
+                          Option 2: Paste Rows (CSV or Tab Delimited)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setImportRawText(
+                              "First Name,Last Name,WhatsApp Phone,Gender,Role,Date,Status\nJohn,Doe,+2348030001111,Male,member,2026-06-14,Present\nSarah,Smith,+2348030002222,Female,worker,2026-06-14,Present"
+                            );
+                          }}
+                          className="text-[10px] text-blue-500 hover:underline"
+                        >
+                          Insert Sample Demo
+                        </button>
+                      </div>
+                      <textarea
+                        rows={6}
+                        placeholder={`Format on each line: First Name, Last Name, WhatsApp, Gender, Role, Date, Status\n\nExample:\nJohn,Doe,+2348011223344,Male,member,2026-06-14,Present`}
+                        value={importRawText}
+                        onChange={(e) => setImportRawText(e.target.value)}
+                        className="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-2xl text-slate-800 dark:text-slate-100 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                    </div>
+
+                    <div className="p-3 bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-slate-150 dark:border-slate-850 text-[10px] leading-relaxed text-slate-500 dark:text-slate-400">
+                      <p className="font-bold text-slate-700 dark:text-slate-350 mb-0.5">ℹ️ Data Matching Rules:</p>
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        <li>Duplicates are automatically merged based on <strong>WhatsApp Phone Number</strong>.</li>
+                        <li>Roles supported: <strong>member</strong> or <strong>worker</strong>.</li>
+                        <li>Genders supported: <strong>Male</strong> or <strong>Female</strong>.</li>
+                        <li>Format: <strong>FirstName, LastName, Phone, Gender, Role, [Optional Sunday Date], [Optional Status]</strong></li>
+                      </ul>
+                    </div>
+
+                    {importFileError && (
+                      <div className="p-3 bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 rounded-xl text-xs font-semibold">
+                        ⚠️ {importFileError}
+                      </div>
+                    )}
+
+                    {importResult && (
+                      <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-semibold">
+                        ✅ {importResult}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={importingStatus}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm transition-all shadow cursor-pointer uppercase flex items-center justify-center gap-2"
+                    >
+                      {importingStatus ? (
+                        <>
+                          <RefreshCw size={16} className="animate-spin" />
+                          Processing importing...
+                        </>
+                      ) : (
+                        "Run Bulk Import"
+                      )}
                     </button>
                   </form>
                 </div>

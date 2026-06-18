@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Check, Heart, Shield, Sparkles, User, Users } from "lucide-react";
+import { Check, Heart, Shield, Sparkles, User, Users, RefreshCw } from "lucide-react";
 import { motion } from "motion/react";
 
 interface AttendanceFormProps {
@@ -13,72 +13,114 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
   const [role, setRole] = useState<"member" | "worker">("member");
   const [gender, setGender] = useState<"Male" | "Female" | "">("");
   const [loading, setLoading] = useState(false);
+  const [autoChecking, setAutoChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [resolvedStatus, setResolvedStatus] = useState<"success_new" | "success_returning" | "already_checked_in" | "">("");
+  const [resolvedMsg, setResolvedMsg] = useState("");
 
   // Parse URL queries for date pre-selection
   const [serviceDate, setServiceDate] = useState("");
 
   useEffect(() => {
+    let resolvedDate = "";
     if (defaultDate) {
-      setServiceDate(defaultDate);
-      return;
-    }
-    const params = new URLSearchParams(window.location.search);
-    const dateParam = params.get("date");
-    if (dateParam) {
-      if (dateParam.startsWith("month-")) {
-        // Monthly QR code format: month-YYYY-MM
-        try {
-          const monthStr = dateParam.replace("month-", ""); // e.g. "2026-06"
-          const parts = monthStr.split("-");
-          const year = parseInt(parts[0], 10);
-          const monthIdx = parseInt(parts[1], 10) - 1; // 0-indexed
+      resolvedDate = defaultDate;
+    } else {
+      const params = new URLSearchParams(window.location.search);
+      const dateParam = params.get("date");
+      if (dateParam) {
+        if (dateParam.startsWith("month-")) {
+          // Monthly QR code format: month-YYYY-MM
+          try {
+            const monthStr = dateParam.replace("month-", ""); // e.g. "2026-06"
+            const parts = monthStr.split("-");
+            const year = parseInt(parts[0], 10);
+            const monthIdx = parseInt(parts[1], 10) - 1; // 0-indexed
 
-          const today = new Date();
-          if (today.getFullYear() === year && today.getMonth() === monthIdx) {
-            // If scanning within the same month, calculate Sunday of this week
-            const target = new Date(today);
-            const day = target.getDay();
-            target.setDate(target.getDate() - day); // Goes back to the most recent Sunday
-            
-            // Format to YYYY-MM-DD cleanly using timezone-safe format
-            const y = target.getFullYear();
-            const m = String(target.getMonth() + 1).padStart(2, "0");
-            const d = String(target.getDate()).padStart(2, "0");
-            setServiceDate(`${y}-${m}-${d}`);
-          } else {
-            // Fallback to first Sunday of that specific month
-            const firstOfM = new Date(year, monthIdx, 1);
-            const firstDayOfWeek = firstOfM.getDay();
-            const diff = firstDayOfWeek === 0 ? 0 : 7 - firstDayOfWeek;
-            const firstSunday = new Date(firstOfM);
-            firstSunday.setDate(firstOfM.getDate() + diff);
-            
-            const y = firstSunday.getFullYear();
-            const m = String(firstSunday.getMonth() + 1).padStart(2, "0");
-            const d = String(firstSunday.getDate()).padStart(2, "0");
-            setServiceDate(`${y}-${m}-${d}`);
+            const today = new Date();
+            if (today.getFullYear() === year && today.getMonth() === monthIdx) {
+              // If scanning within the same month, calculate Sunday of this week
+              const target = new Date(today);
+              const day = target.getDay();
+              target.setDate(target.getDate() - day); // Goes back to the most recent Sunday
+              
+              const y = target.getFullYear();
+              const m = String(target.getMonth() + 1).padStart(2, "0");
+              const d = String(target.getDate()).padStart(2, "0");
+              resolvedDate = `${y}-${m}-${d}`;
+            } else {
+              // Fallback to first Sunday of that specific month
+              const firstOfM = new Date(year, monthIdx, 1);
+              const firstDayOfWeek = firstOfM.getDay();
+              const diff = firstDayOfWeek === 0 ? 0 : 7 - firstDayOfWeek;
+              const firstSunday = new Date(firstOfM);
+              firstSunday.setDate(firstOfM.getDate() + diff);
+              
+              const y = firstSunday.getFullYear();
+              const m = String(firstSunday.getMonth() + 1).padStart(2, "0");
+              const d = String(firstSunday.getDate()).padStart(2, "0");
+              resolvedDate = `${y}-${m}-${d}`;
+            }
+          } catch (err) {
+            console.error("Error parsing monthly QR date:", err);
+            const today = new Date();
+            const day = today.getDay();
+            today.setDate(today.getDate() - day);
+            resolvedDate = today.toISOString().split("T")[0];
           }
-        } catch (err) {
-          console.error("Error parsing monthly QR date:", err);
-          // Standard backup
-          const today = new Date();
-          const day = today.getDay();
-          today.setDate(today.getDate() - day);
-          setServiceDate(today.toISOString().split("T")[0]);
+        } else {
+          resolvedDate = dateParam;
         }
       } else {
-        setServiceDate(dateParam);
+        // Find closest/most recent Sunday of today
+        const today = new Date();
+        const day = today.getDay();
+        today.setDate(today.getDate() - day);
+        resolvedDate = today.toISOString().split("T")[0];
       }
-    } else {
-      // Find closest/most recent Sunday of today
-      const today = new Date();
-      const day = today.getDay();
-      today.setDate(today.getDate() - day);
-      setServiceDate(today.toISOString().split("T")[0]);
+    }
+
+    setServiceDate(resolvedDate);
+
+    // Smart Recognition of Returning Attendees via saved profile
+    const savedId = localStorage.getItem("attendance_profile_id");
+    const savedType = localStorage.getItem("attendance_profile_type") || "member";
+    if (savedId && resolvedDate) {
+      triggerAutoCheckin(savedId, savedType, resolvedDate);
     }
   }, [defaultDate]);
+
+  const triggerAutoCheckin = async (personId: string, personType: string, date: string) => {
+    setAutoChecking(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/attendance/auto-checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personId,
+          personType,
+          submissionDate: date
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setResolvedStatus(data.status);
+        setResolvedMsg(data.message);
+        setSuccess(true);
+      } else {
+        // Stored profile might be obsolete or deleted online; wipe to let them register again
+        localStorage.removeItem("attendance_profile_id");
+        localStorage.removeItem("attendance_profile_type");
+        localStorage.removeItem("attendance_first_name");
+      }
+    } catch (e) {
+      console.error("Smart checkin verification error:", e);
+    } finally {
+      setAutoChecking(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -134,12 +176,36 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
         throw new Error(errData?.error || "Failed to log attendance.");
       }
 
+      const data = await response.json();
+      
+      // Store on successful first scan to auto-recognize thereafter!
+      if (data.personId) {
+        localStorage.setItem("attendance_profile_id", data.personId);
+        localStorage.setItem("attendance_profile_type", data.personType || role);
+        localStorage.setItem("attendance_first_name", data.firstName || firstName.trim());
+      }
+
+      setResolvedStatus(data.status);
+      setResolvedMsg(data.message);
       setSuccess(true);
     } catch (err: any) {
       setError(err?.message || "Something went wrong while logging attendance. Please try again.");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRegisterAnother = () => {
+    localStorage.removeItem("attendance_profile_id");
+    localStorage.removeItem("attendance_profile_type");
+    localStorage.removeItem("attendance_first_name");
+    setSuccess(false);
+    setFirstName("");
+    setLastName("");
+    setWhatsAppNumber("");
+    setGender("");
+    setResolvedStatus("");
+    setResolvedMsg("");
   };
 
   const formatDateLabel = (dateStr: string) => {
@@ -153,39 +219,72 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
     }
   };
 
+  if (autoChecking) {
+    return (
+      <div className="w-full max-w-sm mx-auto p-8 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl flex flex-col items-center justify-center">
+        <RefreshCw strokeWidth={2} className="animate-spin text-blue-600 mb-4" size={32} />
+        <h3 className="text-lg font-display font-bold text-slate-800 dark:text-slate-100">Smart Recognition</h3>
+        <p className="text-xs text-slate-400 mt-2">Checking for previously registered attendee profile...</p>
+      </div>
+    );
+  }
+
   if (success) {
+    const isAlreadyChecked = resolvedStatus === "already_checked_in";
     return (
       <div className="w-full max-w-md mx-auto" id="form-success-card">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.4 }}
-          className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl overflow-hidden border border-emerald-500/20 text-center p-8 sm:p-12 relative"
+          className={`bg-white dark:bg-slate-900 rounded-3xl shadow-xl overflow-hidden border ${
+            isAlreadyChecked ? "border-amber-500/20" : "border-emerald-500/20"
+          } text-center p-8 sm:p-12 relative`}
         >
           {/* Subtle background visual glows */}
-          <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-emerald-400 to-teal-500" />
-          <div className="absolute -top-12 -left-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl" />
-          <div className="absolute -bottom-12 -right-12 w-32 h-32 bg-teal-500/5 rounded-full blur-2xl" />
+          <div className={`absolute top-0 left-0 w-full h-2 bg-gradient-to-r ${
+            isAlreadyChecked ? "from-amber-400 to-orange-500" : "from-emerald-400 to-teal-500"
+          }`} />
+          <div className="absolute -top-12 -left-12 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl font-sans" />
+          <div className="absolute -bottom-12 -right-12 w-32 h-32 bg-teal-500/5 rounded-full blur-2xl font-sans" />
 
-          <div className="mx-auto w-20 h-20 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center mb-6 shadow-sm">
-            <Check size={40} strokeWidth={2.5} />
+          <div className={`mx-auto w-20 h-20 ${
+            isAlreadyChecked 
+              ? "bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400" 
+              : "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400"
+          } rounded-full flex items-center justify-center mb-6 shadow-sm`}>
+            {isAlreadyChecked ? (
+              <span className="text-3xl">👋</span>
+            ) : (
+              <Check size={40} strokeWidth={2.5} />
+            )}
           </div>
 
           <h2 className="text-3xl font-display font-bold text-slate-800 dark:text-slate-100 mb-3 tracking-tight">
-            Registered!
+            {isAlreadyChecked ? "Already Registered" : "Recorded!"}
           </h2>
           
-          <p className="text-emerald-600 dark:text-emerald-400 font-medium mb-6 flex items-center justify-center gap-1.5 text-sm sm:text-base">
-            <Sparkles size={16} /> Service: {formatDateLabel(serviceDate)}
+          <p className="text-slate-500 dark:text-slate-450 font-medium mb-6 flex items-center justify-center gap-1.5 text-xs sm:text-sm">
+            <Sparkles size={14} className="text-indigo-500" /> Date: {formatDateLabel(serviceDate)}
           </p>
 
-          <p className="text-lg text-slate-600 dark:text-slate-300 font-sans tracking-wide leading-relaxed px-2 font-medium">
-            "God Bless you. Enjoy the rest of the service in God's presence."
+          <p className="text-lg text-slate-700 dark:text-slate-200 font-sans tracking-wide leading-relaxed px-2 font-semibold">
+            {resolvedMsg || "God Bless you. Enjoy the rest of the service in God's presence."}
           </p>
 
-          <div className="mt-8 pt-8 border-t border-slate-100 dark:border-slate-800 flex justify-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-            <Heart size={14} className="text-rose-500 animate-pulse" />
-            <span>Church Administration Management</span>
+          <div className="mt-8 pt-6 border-t border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center gap-4">
+            <button
+              type="button"
+              onClick={handleRegisterAnother}
+              className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm"
+              id="clear-device-btn"
+            >
+              🔄 Register Another Person
+            </button>
+            <div className="flex justify-center gap-2 text-[10px] text-slate-400 dark:text-slate-500">
+              <Heart size={12} className="text-rose-500 animate-pulse" />
+              <span>Church Attendance Management</span>
+            </div>
           </div>
         </motion.div>
       </div>
