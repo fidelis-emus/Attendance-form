@@ -69,11 +69,12 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
       if (dateParam) {
         resolvedDate = dateParam;
       } else {
-        // Find closest/most recent Sunday of today
+        // Use actual current date in YYYY-MM-DD format
         const today = new Date();
-        const day = today.getDay();
-        today.setDate(today.getDate() - day);
-        resolvedDate = today.toISOString().split("T")[0];
+        const year = today.getFullYear();
+        const monthStr = String(today.getMonth() + 1).padStart(2, "0");
+        const dateStr = String(today.getDate()).padStart(2, "0");
+        resolvedDate = `${year}-${monthStr}-${dateStr}`;
       }
     }
 
@@ -657,121 +658,87 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
               </div>
             </div>
 
-            {/* MUTUALLY EXCLUSIVE SELECTION: WORKER OR MEMBER CHECKBOX CARDS */}
+            {/* MUTUALLY EXCLUSIVE SELECTION: WORKER OR MEMBER CHECKBOXES */}
             <div>
-              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
+              <span className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
                 Role Category <span className="text-rose-500">*</span>
-              </label>
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  type="button"
-                  id="role-member-btn"
-                  onClick={() => setRole("member")}
-                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 cursor-pointer ${
-                    role === "member"
-                      ? "bg-blue-500/5 text-blue-600 dark:text-blue-400 border-blue-500 scale-[0.98] ring-2 ring-blue-500/15"
-                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
-                  }`}
+              </span>
+              <div className="flex flex-col sm:flex-row gap-4 p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-850">
+                <label 
+                  htmlFor="role-member" 
+                  className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
                 >
-                  <Users size={22} className="mb-1.5" />
-                  <span className="text-xs font-bold tracking-tight">Member</span>
-                  <div className="mt-1.5 flex items-center gap-15">
-                    <input
-                      type="checkbox"
-                      id="role-member-checkbox"
-                      checked={role === "member"}
-                      readOnly
-                      className="rounded border-slate-300 text-blue-500 focus:ring-blue-500 pointer-events-none"
-                    />
-                    <span className="text-[10px] font-semibold text-slate-400">Selected</span>
+                  <input
+                    type="checkbox"
+                    id="role-member"
+                    checked={role === "member"}
+                    onChange={() => setRole("member")}
+                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Member</span>
+                    <span className="text-[10px] text-slate-400">Regular congregation attendee</span>
                   </div>
-                </button>
+                </label>
 
-                <button
-                  type="button"
-                  id="role-worker-btn"
-                  onClick={() => setRole("worker")}
-                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 cursor-pointer ${
-                    role === "worker"
-                      ? "bg-violet-500/5 text-violet-600 dark:text-violet-400 border-violet-500 scale-[0.98] ring-2 ring-violet-500/15"
-                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
-                  }`}
+                <label 
+                  htmlFor="role-worker" 
+                  className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
                 >
-                  <Shield size={22} className="mb-1.5" />
-                  <span className="text-xs font-bold tracking-tight">Worker</span>
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      id="role-worker-checkbox"
-                      checked={role === "worker"}
-                      readOnly
-                      className="rounded border-slate-300 text-violet-500 focus:ring-violet-500 pointer-events-none"
-                    />
-                    <span className="text-[10px] font-semibold text-slate-400">Selected</span>
+                  <input
+                    type="checkbox"
+                    id="role-worker"
+                    checked={role === "worker"}
+                    onChange={() => setRole("worker")}
+                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Worker</span>
+                    <span className="text-[10px] text-slate-400">Service facilitator or team leader</span>
                   </div>
-                </button>
+                </label>
               </div>
             </div>
 
-            {/* MUTUALLY EXCLUSIVE GENDER SELECTION: MALE OR FEMALE CHECKBOX CARDS */}
+            {/* MUTUALLY EXCLUSIVE GENDER SELECTION: MALE OR FEMALE CHECKBOXES */}
             <div>
-              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
+              <span className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
                 Gender / Sex <span className="text-rose-500">*</span>
-              </label>
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  type="button"
-                  id="gender-male-btn"
-                  onClick={() => setGender("Male")}
-                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 cursor-pointer ${
-                    gender === "Male"
-                      ? "bg-blue-500/5 text-blue-600 dark:text-blue-400 border-blue-500 scale-[0.98] ring-2 ring-blue-500/15"
-                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
-                  }`}
+              </span>
+              <div className="flex flex-col sm:flex-row gap-4 p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-850">
+                <label 
+                  htmlFor="gender-male" 
+                  className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
                 >
-                  <span className="text-2xl mb-1">🧔</span>
-                  <span className="text-xs font-bold tracking-tight">Male</span>
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      id="gender-male-checkbox"
-                      checked={gender === "Male"}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        setGender("Male");
-                      }}
-                      className="rounded border-slate-300 text-blue-500 focus:ring-blue-500 cursor-pointer"
-                    />
-                    <span className="text-[10px] font-semibold text-slate-400">Click to Select</span>
+                  <input
+                    type="checkbox"
+                    id="gender-male"
+                    checked={gender === "Male"}
+                    onChange={() => setGender("Male")}
+                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Male</span>
+                    <span className="text-[10px] text-slate-400">Brother / Man</span>
                   </div>
-                </button>
+                </label>
 
-                <button
-                  type="button"
-                  id="gender-female-btn"
-                  onClick={() => setGender("Female")}
-                  className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-250 cursor-pointer ${
-                    gender === "Female"
-                      ? "bg-pink-500/5 text-pink-600 dark:text-pink-400 border-pink-500 scale-[0.98] ring-2 ring-pink-500/15"
-                      : "bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-850 text-slate-500 dark:text-slate-400 hover:border-slate-300"
-                  }`}
+                <label 
+                  htmlFor="gender-female" 
+                  className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
                 >
-                  <span className="text-2xl mb-1">👩</span>
-                  <span className="text-xs font-bold tracking-tight">Female</span>
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      id="gender-female-checkbox"
-                      checked={gender === "Female"}
-                      onChange={(e) => {
-                        e.stopPropagation();
-                        setGender("Female");
-                      }}
-                      className="rounded border-slate-300 text-pink-500 focus:ring-pink-500 cursor-pointer"
-                    />
-                    <span className="text-[10px] font-semibold text-slate-400">Click to Select</span>
+                  <input
+                    type="checkbox"
+                    id="gender-female"
+                    checked={gender === "Female"}
+                    onChange={() => setGender("Female")}
+                    className="w-5 h-5 rounded border-slate-300 text-pink-600 focus:ring-pink-500 cursor-pointer"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Female</span>
+                    <span className="text-[10px] text-slate-400">Sister / Woman</span>
                   </div>
-                </button>
+                </label>
               </div>
             </div>
 

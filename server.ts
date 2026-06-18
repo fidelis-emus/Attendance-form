@@ -573,15 +573,21 @@ app.post("/api/attendance/submit", async (req, res) => {
     const { personId, firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender, eventType } = req.body;
 
     const db = await getDb();
-    const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
-
-    const d = submissionDate ? new Date(submissionDate) : new Date();
-    const hasCustomDate = !!submissionDate;
-    const day = String(hasCustomDate && !isNaN(d.getTime()) ? d.getDate() : new Date().getDate()).padStart(2, '0');
-    const year = String(hasCustomDate && !isNaN(d.getTime()) ? d.getFullYear() : new Date().getFullYear());
+    
+    // Server real-time date/time calculations
+    const d = new Date();
+    const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    const month = monthNames[hasCustomDate && !isNaN(d.getTime()) ? d.getMonth() : new Date().getMonth()];
-    const time = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+    
+    const dayOfWeek = daysOfWeek[d.getDay()];
+    const day = dayOfWeek; // Day of Week as day field
+    const month = monthNames[d.getMonth()];
+    const year = String(d.getFullYear());
+    const attendanceDate = d.toISOString().split("T")[0];
+    const attendanceTime = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+    
+    const dateUsed = submissionDate ? submissionDate : attendanceDate;
+    const time = attendanceTime;
 
     const selectedEvent = eventType || "Sunday Experience"; // Default fallbacks 
 
@@ -614,7 +620,7 @@ app.post("/api/attendance/submit", async (req, res) => {
           personType: resolvedType,
           firstName: existing.firstName,
           lastName: existing.lastName,
-          message: "You have already taken attendance for this program today. God Bless you."
+          message: `You have already taken attendance for ${selectedEvent} today. God Bless you.`
         });
       }
 
@@ -647,9 +653,11 @@ app.post("/api/attendance/submit", async (req, res) => {
         eventType: selectedEvent,
         attendanceDate: dateUsed,
         day,
+        dayOfWeek,
         month,
         year,
         time,
+        attendanceTime: time,
         status: "Present",
         timestamp: new Date().toISOString(),
       });
@@ -728,7 +736,7 @@ app.post("/api/attendance/submit", async (req, res) => {
         personType,
         firstName: existingName,
         lastName: existing ? existing.lastName : lastName.trim(),
-        message: "You have already taken attendance for this program today. God Bless you."
+        message: `You have already taken attendance for ${selectedEvent} today. God Bless you.`
       });
     }
 
@@ -747,9 +755,11 @@ app.post("/api/attendance/submit", async (req, res) => {
       eventType: selectedEvent,
       attendanceDate: dateUsed,
       day,
+      dayOfWeek,
       month,
       year,
       time,
+      attendanceTime: time,
       status: "Present",
       timestamp: new Date().toISOString(),
     });
@@ -776,7 +786,7 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
       return res.status(400).json({ error: "Missing personId" });
     }
 
-    const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
+    const dateUsed = submissionDate ? submissionDate : new Date().toISOString().split("T")[0];
     const db = await getDb();
 
     // Look up in members

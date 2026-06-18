@@ -145,6 +145,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [monthFilter, setMonthFilter] = useState("all");
   const [sundayFilter, setSundayFilter] = useState("all");
+  const [historyProgramFilter, setHistoryProgramFilter] = useState("all");
+  const [historyYearFilter, setHistoryYearFilter] = useState("all");
 
   // Detailed Modal states
   const [selectedDetailsPerson, setSelectedDetailsPerson] = useState<
@@ -1074,6 +1076,244 @@ export default function App() {
     addNotification("Report downloaded to Excel CSV spread.", "success");
   };
 
+  const handleExportExcel = () => {
+    const list = getFilteredHistory();
+    const headers = [
+      "No",
+      "Attendance Date",
+      "First Name",
+      "Last Name",
+      "Roster Role",
+      "Program / Event",
+      "WhatsApp Phone",
+      "Gender",
+      "Attendance Time",
+      "Day of Week",
+      "Month",
+      "Year",
+      "Status"
+    ];
+    const data = list.map((item, index) => [
+      index + 1,
+      item.date || item.attendanceDate || "",
+      item.firstName || "",
+      item.lastName || "",
+      item.personType || item.role || "Member",
+      item.eventType || "Sunday Experience",
+      item.whatsAppNumber || "",
+      item.gender || "",
+      item.time || item.attendanceTime || "",
+      item.dayOfWeek || item.day || "",
+      item.month || "",
+      item.year || "",
+      item.status || "Present"
+    ]);
+    
+    handleExportCSV(data, headers, `Church_Attendance_Report_${new Date().toISOString().split("T")[0]}.csv`);
+  };
+
+  const handleExportPDF = () => {
+    const list = getFilteredHistory();
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      addNotification("Please allow popups/tabs to export PDFs.", "error");
+      return;
+    }
+
+    const criteria = [
+      historyProgramFilter !== "all" ? `Program: ${historyProgramFilter}` : null,
+      monthFilter !== "all" ? `Month: ${monthFilter}` : null,
+      sundayFilter !== "all" ? `Date: ${sundayFilter}` : null,
+      historyYearFilter !== "all" ? `Year: ${historyYearFilter}` : null,
+    ].filter(Boolean).join(" | ") || "All Records";
+
+    const rowsHtml = list.map((item, index) => {
+      const name = `${item.firstName} ${item.lastName}`;
+      const role = item.personType || item.role || "Member";
+      const program = item.eventType || "Sunday Experience";
+      const phone = item.whatsAppNumber || "N/A";
+      const gender = item.gender || "Unspecified";
+      const date = item.date || item.attendanceDate;
+      const time = item.time || item.attendanceTime || "N/A";
+
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 10px; font-weight: bold; color: #1e293b;">${index + 1}</td>
+          <td style="padding: 10px; font-weight: bold; color: #2563eb;">${date}</td>
+          <td style="padding: 10px; font-weight: bold; color: #0f172a;">${name}</td>
+          <td style="padding: 10px;"><span style="font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 9999px; background: ${role.toLowerCase() === 'worker' ? '#f5f3ff; color: #7c3aed;' : '#f0f9ff; color: #0369a1;'}">${role}</span></td>
+          <td style="padding: 10px; color: #475569;">${program}</td>
+          <td style="padding: 10px; font-family: monospace; color: #334155;">${phone}</td>
+          <td style="padding: 10px; color: #475569;">${gender}</td>
+          <td style="padding: 10px; font-family: monospace; color: #64748b;">${time}</td>
+        </tr>
+      `;
+    }).join("");
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Church Attendance Report - Export</title>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+            body {
+              font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+              color: #0f172a;
+              margin: 40px;
+              line-height: 1.5;
+            }
+            .header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              border-bottom: 3px double #e2e8f0;
+              padding-bottom: 20px;
+              margin-bottom: 25px;
+            }
+            .logo-placeholder {
+              width: 50px;
+              height: 50px;
+              background: linear-gradient(135deg, #1e3a8a, #2563eb);
+              border-radius: 12px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              color: white;
+              font-size: 24px;
+            }
+            .title-area h1 {
+              font-size: 24px;
+              font-weight: 800;
+              margin: 0;
+              letter-spacing: -0.5px;
+              background: linear-gradient(to right, #1e3a8a, #2563eb);
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+            }
+            .title-area p {
+              font-size: 11px;
+              color: #64748b;
+              margin: 5px 0 0 0;
+              font-weight: 700;
+              letter-spacing: 1px;
+            }
+            .meta-box {
+              background: #f8fafc;
+              border: 1px solid #f1f5f9;
+              border-radius: 12px;
+              padding: 15px;
+              margin-bottom: 25px;
+              display: flex;
+              justify-content: space-between;
+              font-size: 13px;
+            }
+            .meta-item {
+              margin-bottom: 4px;
+            }
+            .meta-item span {
+              font-weight: 700;
+              color: #334155;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              font-size: 12px;
+              margin-top: 10px;
+            }
+            th {
+              background: #f1f5f9;
+              color: #475569;
+              text-transform: uppercase;
+              font-size: 10px;
+              font-weight: 800;
+              letter-spacing: 0.5px;
+              padding: 12px 10px;
+              text-align: left;
+              border-bottom: 2px solid #cbd5e1;
+            }
+            .footer {
+              margin-top: 40px;
+              border-top: 1px solid #e2e8f0;
+              padding-top: 15px;
+              display: flex;
+              justify-content: space-between;
+              font-size: 11px;
+              color: #94a3b8;
+              font-weight: 600;
+            }
+            @media print {
+              body { margin: 20px; }
+              button { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <div style="max-width: 1000px; margin: 0 auto;">
+            <div class="header">
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <div class="logo-placeholder">⛪</div>
+                <div class="title-area">
+                  <h1>Church Attendance Executive Report</h1>
+                  <p>SMART CHUCH ATTENDANCE MANAGEMENT SYSTEM</p>
+                </div>
+              </div>
+              <div style="text-align: right;">
+                <div style="font-weight: 800; color: #1e293b; font-size: 13px;">DOCUMENT ID</div>
+                <div style="font-family: monospace; font-size: 12px; color: #64748b; font-weight: bold;">CMS-${Date.now().toString().substring(5)}</div>
+              </div>
+            </div>
+
+            <div class="meta-box">
+              <div>
+                <div class="meta-item"><span>Reporting Criteria:</span> ${criteria}</div>
+                <div class="meta-item"><span>Export Timestamp:</span> ${new Date().toLocaleString()}</div>
+                <div class="meta-item"><span>Security Token:</span> System Generated PDF</div>
+              </div>
+              <div style="text-align: right; display: flex; flex-direction: column; justify-content: center; border-left: 2px solid #e2e8f0; padding-left: 20px;">
+                <div style="font-size: 10px; font-weight: 800; color: #64748b; text-transform: uppercase;">Filtered Attendances</div>
+                <div style="font-size: 28px; font-weight: 800; color: #2563eb; line-height: 1;">${list.length}</div>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 40px;">#</th>
+                  <th style="width: 100px;">Date</th>
+                  <th>Full Name</th>
+                  <th style="width: 100px;">Role</th>
+                  <th style="width: 150px;">Program Type</th>
+                  <th style="width: 120px;">WhatsApp Phone</th>
+                  <th style="width: 80px;">Gender</th>
+                  <th style="width: 80px;">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rowsHtml || `<tr><td colspan="8" style="text-align: center; padding: 30px; font-weight: bold; color: #94a3b8;">No records match your selected filtering properties.</td></tr>`}
+              </tbody>
+            </table>
+
+            <div class="footer">
+              <div>© 2026 Smart Attendance System • Real-Time Database Ledger Reports</div>
+              <div>Authority: Certified Congregation Audit</div>
+            </div>
+          </div>
+          <script>
+            window.onload = function() {
+              setTimeout(function() {
+                window.print();
+              }, 500);
+            };
+          </script>
+        </body>
+      </html>
+    `);
+
+    printWindow.document.close();
+    addNotification("Professional PDF Report layout dispatched successfully!", "success");
+  };
+
   const handleExportBackup = async (e: React.MouseEvent) => {
     e.preventDefault();
     addNotification("Downloading database backup file...", "info");
@@ -1155,7 +1395,18 @@ export default function App() {
         matchesMonth = m === monthFilter;
       }
 
-      return (nameMatched || phoneMatched) && matchesSunday && matchesMonth;
+      let matchesProgram = true;
+      if (historyProgramFilter !== "all") {
+        matchesProgram = record.eventType === historyProgramFilter;
+      }
+
+      let matchesYear = true;
+      if (historyYearFilter !== "all") {
+        const yr = record.date.substring(0, 4);
+        matchesYear = yr === historyYearFilter;
+      }
+
+      return (nameMatched || phoneMatched) && matchesSunday && matchesMonth && matchesProgram && matchesYear;
     });
   };
 
@@ -2082,126 +2333,203 @@ export default function App() {
                         <Upload size={14} /> Import Attendance
                       </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (registerSubTab === "history") {
-                            const filtered = getFilteredHistory();
-                            const rows = filtered.map((item) => [
-                              item.date,
-                              `${item.firstName} ${item.lastName}`,
-                              item.personType || item.role || "Member",
-                              item.eventType || "Sunday Experience",
-                              item.whatsAppNumber,
-                              item.gender || "Unspecified",
-                              item.timestamp,
-                            ]);
-                            handleExportCSV(
-                              rows,
-                              [
-                                "Date",
-                                "Full Name",
-                                "Category (Role)",
-                                "Event Type",
-                                "Phone Number",
-                                "Gender",
-                                "Logged At Time",
-                              ],
-                              `church_attendance_history_${Date.now()}.csv`,
-                            );
-                          } else {
-                            const list =
-                              registerSubTab === "workers" ? workers : members;
-                            const filtered = getFilteredPersons(list);
-                            const rows = filtered.map((item) => [
-                              `${item.firstName} ${item.lastName}`,
-                              item.whatsAppNumber,
-                              item.currentStatus,
-                              item.lastAttendanceDate,
-                              item.messageDeliveryStatus || "None",
-                            ]);
-                            handleExportCSV(
-                              rows,
-                              [
-                                "Full Name",
-                                "Phone",
-                                "Status",
-                                "Last Attendance Sunday",
-                                "Latest WhatsApp status",
-                              ],
-                              `church_${registerSubTab}_database_${Date.now()}.csv`,
-                            );
-                          }
-                        }}
-                        className="py-2 px-3.5 bg-slate-800 dark:bg-slate-820 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
-                      >
-                        <FileSpreadsheet size={14} /> Export Excel
-                      </button>
+                      {registerSubTab === "history" ? (
+                        <>
+                          <button
+                            type="button"
+                            id="export-history-excel-btn"
+                            onClick={handleExportExcel}
+                            className="py-2 px-3.5 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                          >
+                            <FileSpreadsheet size={14} /> Export Excel
+                          </button>
 
-                      <button
-                        type="button"
-                        onClick={triggerBrowserPrint}
-                        className="py-2 px-3.5 bg-slate-100 hover:bg-slate-200 text-slate-750 text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
-                      >
-                        <Printer size={14} /> Print
-                      </button>
+                          <button
+                            type="button"
+                            id="export-history-pdf-btn"
+                            onClick={handleExportPDF}
+                            className="py-2 px-3.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download size={14} /> Export PDF
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            id="export-roster-excel-btn"
+                            onClick={() => {
+                              const list =
+                                registerSubTab === "workers" ? workers : members;
+                              const filtered = getFilteredPersons(list);
+                              const rows = filtered.map((item) => [
+                                `${item.firstName} ${item.lastName}`,
+                                item.whatsAppNumber,
+                                item.currentStatus,
+                                item.lastAttendanceDate,
+                                item.messageDeliveryStatus || "None",
+                              ]);
+                              handleExportCSV(
+                                rows,
+                                [
+                                  "Full Name",
+                                  "Phone",
+                                  "Status",
+                                  "Last Attendance Sunday",
+                                  "Latest WhatsApp status",
+                                ],
+                                `church_${registerSubTab}_database_${Date.now()}.csv`,
+                              );
+                            }}
+                            className="py-2 px-3.5 bg-slate-800 dark:bg-slate-820 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                          >
+                            <FileSpreadsheet size={14} /> Export Excel
+                          </button>
+
+                          <button
+                            type="button"
+                            id="roster-print-btn"
+                            onClick={triggerBrowserPrint}
+                            className="py-2 px-3.5 bg-slate-100 hover:bg-slate-200 text-slate-750 text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                          >
+                            <Printer size={14} /> Print
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
                   {/* Main Search & Filters Card */}
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 rounded-2xl p-4 flex flex-col md:flex-row gap-3 shadow-sm no-print">
-                    <div className="relative flex-1">
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 rounded-2xl p-4 space-y-3.5 shadow-sm no-print">
+                    <div className="relative">
                       <Search
                         size={16}
-                        className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 animate-pulse"
+                        className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
                       />
                       <input
                         type="text"
                         placeholder="Search roster by spelling first/last name or typing phone number..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-100 focus:outline-none"
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-100 focus:outline-none"
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 md:w-80">
-                      <div>
-                        <select
-                          value={monthFilter}
-                          onChange={(e) => setMonthFilter(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-bold focus:outline-none"
-                        >
-                          <option value="all">📅 All Months</option>
-                          <option value="01">January</option>
-                          <option value="02">February</option>
-                          <option value="03">March</option>
-                          <option value="04">April</option>
-                          <option value="05">May</option>
-                          <option value="06">June</option>
-                          <option value="07">July</option>
-                          <option value="08">August</option>
-                          <option value="09">September</option>
-                          <option value="10">October</option>
-                          <option value="11">November</option>
-                          <option value="12">December</option>
-                        </select>
-                      </div>
+                    {registerSubTab === "history" ? (
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {/* 1. Program Category Filter */}
+                        <div>
+                          <select
+                            id="filter-program-type"
+                            value={historyProgramFilter}
+                            onChange={(e) => setHistoryProgramFilter(e.target.value)}
+                            className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">⛪ All Programs</option>
+                            <option value="Sunday Experience">Sunday Experience</option>
+                            <option value="Word Cafe">Word Cafe</option>
+                            <option value="Special Program">Special Program</option>
+                          </select>
+                        </div>
 
-                      <div>
-                        <select
-                          value={sundayFilter}
-                          onChange={(e) => setSundayFilter(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-bold focus:outline-none"
-                        >
-                          <option value="all">⛪ All Sundays</option>
-                          {sundaysList.map((sun) => (
-                            <option key={sun} value={sun}>
-                              ⛪ {formatDisplayDate(sun)} ({sun})
-                            </option>
-                          ))}
-                        </select>
+                        {/* 2. Month Filter */}
+                        <div>
+                          <select
+                            id="filter-month"
+                            value={monthFilter}
+                            onChange={(e) => setMonthFilter(e.target.value)}
+                            className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">📅 All Months</option>
+                            <option value="01">January</option>
+                            <option value="02">February</option>
+                            <option value="03">March</option>
+                            <option value="04">April</option>
+                            <option value="05">May</option>
+                            <option value="06">June</option>
+                            <option value="07">July</option>
+                            <option value="08">August</option>
+                            <option value="09">September</option>
+                            <option value="10">October</option>
+                            <option value="11">November</option>
+                            <option value="12">December</option>
+                          </select>
+                        </div>
+
+                        {/* 3. Date / Sunday Filter */}
+                        <div>
+                          <select
+                            id="filter-date"
+                            value={sundayFilter}
+                            onChange={(e) => setSundayFilter(e.target.value)}
+                            className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">📅 All Dates</option>
+                            {Array.from(new Set(attendanceHistory.map(r => r.date).filter(Boolean))).sort().reverse().map((dt) => (
+                              <option key={dt} value={dt}>
+                                📅 {dt}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 4. Year Filter */}
+                        <div>
+                          <select
+                            id="filter-year"
+                            value={historyYearFilter}
+                            onChange={(e) => setHistoryYearFilter(e.target.value)}
+                            className="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-400 focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">📆 All Years</option>
+                            <option value="2026">2026</option>
+                            <option value="2025">2025</option>
+                            <option value="2024">2024</option>
+                          </select>
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3 md:w-80 ms-auto">
+                        <div>
+                          <select
+                            id="filter-roster-month"
+                            value={monthFilter}
+                            onChange={(e) => setMonthFilter(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-bold focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">📅 All Months</option>
+                            <option value="01">January</option>
+                            <option value="02">February</option>
+                            <option value="03">March</option>
+                            <option value="04">April</option>
+                            <option value="05">May</option>
+                            <option value="06">June</option>
+                            <option value="07">July</option>
+                            <option value="08">August</option>
+                            <option value="09">September</option>
+                            <option value="10">October</option>
+                            <option value="11">November</option>
+                            <option value="12">December</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <select
+                            id="filter-roster-sunday"
+                            value={sundayFilter}
+                            onChange={(e) => setSundayFilter(e.target.value)}
+                            className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-600 dark:text-slate-400 font-bold focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">⛪ All Sundays</option>
+                            {sundaysList.map((sun) => (
+                              <option key={sun} value={sun}>
+                                ⛪ {formatDisplayDate(sun)} ({sun})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Standard Registers Tables */}

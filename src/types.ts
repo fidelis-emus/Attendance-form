@@ -28,7 +28,7 @@ export interface Worker {
 
 export interface AttendanceRecord {
   id: string;
-  date: string; // YYYY-MM-DD (identifies the specific Sunday)
+  date: string; // YYYY-MM-DD
   personId: string; // References Member or Worker ID
   personType: "member" | "worker";
   firstName: string;
@@ -36,6 +36,17 @@ export interface AttendanceRecord {
   whatsAppNumber: string;
   gender?: "Male" | "Female" | string;
   timestamp: string; // ISO 8601 string of when they submitted
+  
+  // Real-time explicit reporting fields
+  memberId?: string;
+  role?: string;
+  eventType?: string; // Program Type
+  attendanceDate?: string;
+  attendanceTime?: string;
+  day?: string; // Day of Week
+  month?: string;
+  year?: string;
+  status?: string; // "Present"
 }
 
 export interface WhatsAppLog {
