@@ -72,3 +72,15 @@ export interface AuditLog {
   action: string;
   timestamp: string;
 }
+
+export interface EmailSettings {
+  smtpHost: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpAuthUser: string;
+  smtpAuthPass: string;
+  senderEmail: string;
+  leaderEmails: string;
+  enabled: boolean;
+}
+

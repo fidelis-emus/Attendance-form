@@ -39,6 +39,7 @@ import {
   AppSettings,
   Admin,
   AuditLog,
+  EmailSettings,
 } from "./types";
 
 export default function App() {
@@ -76,6 +77,13 @@ export default function App() {
     "members" | "workers" | "history"
   >("members");
 
+  // Dashboard / Statistics Filtering states
+  const [dashboardProgramFilter, setDashboardProgramFilter] = useState<string>("all");
+  const [dashboardDateFilter, setDashboardDateFilter] = useState<string>("all");
+  const [dashboardMonthFilter, setDashboardMonthFilter] = useState<string>("all");
+  const [dashboardYearFilter, setDashboardYearFilter] = useState<string>("all");
+  const [dashboardRoleFilter, setDashboardRoleFilter] = useState<string>("all");
+
   // Dark Mode States
   const [darkMode, setDarkMode] = useState(false);
 
@@ -106,6 +114,16 @@ export default function App() {
     phoneNumberId: "",
     accessToken: "",
     businessAccountId: "",
+  });
+  const [emailConfig, setEmailConfig] = useState<EmailSettings>({
+    smtpHost: "",
+    smtpPort: 587,
+    smtpSecure: false,
+    smtpAuthUser: "",
+    smtpAuthPass: "",
+    senderEmail: "Church Portal <no-reply@church.org>",
+    leaderEmails: "",
+    enabled: false,
   });
 
   // Licensing & Subscription States
@@ -393,6 +411,7 @@ export default function App() {
         "/api/admins",
         "/api/audit-logs",
         "/api/sundays",
+        "/api/email/config",
       ];
 
       const responses = await Promise.all(
@@ -419,6 +438,7 @@ export default function App() {
         adminsListData,
         auditLogsData,
         sundaysData,
+        emailConfigData,
       ] = responses;
 
       const statsVal = statsData && !statsData.error ? statsData : {};
@@ -450,6 +470,9 @@ export default function App() {
       setWhatsAppLogs(sortedWaLogs);
       if (whatsappConfigData && !whatsappConfigData.error) {
         setWhatsAppConfig(whatsappConfigData);
+      }
+      if (emailConfigData && !emailConfigData.error) {
+        setEmailConfig(emailConfigData);
       }
       setAdminsList(adminsListRes);
       setAuditLogs(sortedAuditLogs);
@@ -720,6 +743,144 @@ export default function App() {
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
+    }
+  };
+
+  const [isSavingEmailConfig, setIsSavingEmailConfig] = useState(false);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const [isTriggeringEmailReport, setIsTriggeringEmailReport] = useState(false);
+
+  // Save Email SMTP configurations
+  const handleSaveEmailConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (adminRole !== "Super Admin") {
+      addNotification(
+        "Permissions Denied. Only Super Admins can configure SMTP email settings.",
+        "error",
+      );
+      return;
+    }
+
+    setIsSavingEmailConfig(true);
+    try {
+      const response = await fetch("/api/email/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          smtpHost: emailConfig.smtpHost || "",
+          smtpPort: Number(emailConfig.smtpPort) || 587,
+          smtpSecure: !!emailConfig.smtpSecure,
+          smtpAuthUser: emailConfig.smtpAuthUser || "",
+          smtpAuthPass: emailConfig.smtpAuthPass || "",
+          senderEmail: emailConfig.senderEmail || "Church Portal <no-reply@church.org>",
+          leaderEmails: emailConfig.leaderEmails || "",
+          enabled: !!emailConfig.enabled,
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to save Email configuration.");
+      }
+
+      addNotification(
+        "Email notification settings saved securely",
+        "success",
+      );
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    } finally {
+      setIsSavingEmailConfig(false);
+    }
+  };
+
+  // Send a test email
+  const handleSendTestEmail = async () => {
+    if (!emailConfig.smtpHost || !emailConfig.smtpAuthUser || !emailConfig.smtpAuthPass || !emailConfig.leaderEmails) {
+      addNotification(
+        "Please fill in all SMTP credentials and at least one leader email first.",
+        "error",
+      );
+      return;
+    }
+
+    setIsSendingTestEmail(true);
+    addNotification("Dispatching SMTP connection test mail...", "info");
+
+    try {
+      const response = await fetch("/api/email/send-test-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          smtpHost: emailConfig.smtpHost || "",
+          smtpPort: Number(emailConfig.smtpPort) || 587,
+          smtpSecure: !!emailConfig.smtpSecure,
+          smtpAuthUser: emailConfig.smtpAuthUser || "",
+          smtpAuthPass: emailConfig.smtpAuthPass || "",
+          senderEmail: emailConfig.senderEmail || "Church Portal <no-reply@church.org>",
+          leaderEmails: emailConfig.leaderEmails || "",
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to transmit test email.");
+      }
+
+      addNotification(
+        `SMTP Test successful! Check: ${emailConfig.leaderEmails}`,
+        "success",
+      );
+    } catch (err: any) {
+      addNotification(`SMTP Connection failed: ${err.message}`, "error");
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  };
+
+  // Manually trigger attendance summary email
+  const handleTriggerEmailReport = async (targetDateString?: string) => {
+    if (!emailConfig.enabled) {
+      addNotification(
+        "Email notifications are currently disabled. Please enable and save settings first.",
+        "error",
+      );
+      return;
+    }
+
+    setIsTriggeringEmailReport(true);
+    addNotification("Generating full attendance list & dispatching summary report...", "info");
+
+    try {
+      const response = await fetch("/api/email/trigger-weekly-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date: targetDateString,
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to dispatch email summary.");
+      }
+
+      addNotification(
+        `Executive weekly report sent: ${data.message}`,
+        "success",
+      );
+    } catch (err: any) {
+      addNotification(`Failed to send report: ${err.message}`, "error");
+    } finally {
+      setIsTriggeringEmailReport(false);
     }
   };
 
@@ -1497,8 +1658,286 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* INTERACTIVE FILTERS FOR DASHBOARD STATISTICS */}
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 rounded-2xl shadow-sm no-print space-y-4" id="dashboard-filters-card">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-widest flex items-center gap-1.5">
+                          <span>🔍 Live Statistics filters</span>
+                        </h3>
+                        <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">Filter the program-specific attendances in real-time below.</p>
+                      </div>
+                      
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          setDashboardProgramFilter("all");
+                          setDashboardDateFilter("all");
+                          setDashboardMonthFilter("all");
+                          setDashboardYearFilter("all");
+                          setDashboardRoleFilter("all");
+                        }}
+                        className="text-xs font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer flex items-center gap-1"
+                      >
+                        🔄 Reset Filter Variables
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 pt-1">
+                      {/* 1. Program Category */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Program Type</label>
+                        <select
+                          value={dashboardProgramFilter}
+                          onChange={(e) => setDashboardProgramFilter(e.target.value)}
+                          className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="all">All Programs</option>
+                          <option value="Sunday Experience">Sunday Experience</option>
+                          <option value="Word Cafe">Word Cafe</option>
+                          <option value="Special Program">Special Program</option>
+                        </select>
+                      </div>
+
+                      {/* 2. Specific Date */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Specific Date</label>
+                        <select
+                          value={dashboardDateFilter}
+                          onChange={(e) => setDashboardDateFilter(e.target.value)}
+                          className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="all">All Sundays / Dates</option>
+                          {sundaysList.map((dt) => (
+                            <option key={dt} value={dt}>
+                              {dt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 3. Month Filter */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Month</label>
+                        <select
+                          value={dashboardMonthFilter}
+                          onChange={(e) => setDashboardMonthFilter(e.target.value)}
+                          className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="all">All Months</option>
+                          <option value="January">January</option>
+                          <option value="February">February</option>
+                          <option value="March">March</option>
+                          <option value="April">April</option>
+                          <option value="May">May</option>
+                          <option value="June">June</option>
+                          <option value="July">July</option>
+                          <option value="August">August</option>
+                          <option value="September">September</option>
+                          <option value="October">October</option>
+                          <option value="November">November</option>
+                          <option value="December">December</option>
+                        </select>
+                      </div>
+
+                      {/* 4. Year Filter */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Year</label>
+                        <select
+                          value={dashboardYearFilter}
+                          onChange={(e) => setDashboardYearFilter(e.target.value)}
+                          className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="all">All Years</option>
+                          <option value="2026">2026</option>
+                          <option value="2025">2025</option>
+                          <option value="2024">2024</option>
+                        </select>
+                      </div>
+
+                      {/* 5. Member / Worker Role */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Roster Role</label>
+                        <select
+                          value={dashboardRoleFilter}
+                          onChange={(e) => setDashboardRoleFilter(e.target.value)}
+                          className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="all">All Ranks (Members & Workers)</option>
+                          <option value="member">Members Only</option>
+                          <option value="worker">Workers Only</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LIVE PROGRAM-SPECIFIC STATISTICS PANEL */}
+                  {(() => {
+                    // Pre-compute filtered stats in real-time
+                    const filteredRecordsForStats = attendanceHistory.filter((rec: any) => {
+                      if (dashboardProgramFilter !== "all" && rec.eventType !== dashboardProgramFilter) return false;
+                      if (dashboardDateFilter !== "all" && rec.date !== dashboardDateFilter) return false;
+                      if (dashboardMonthFilter !== "all") {
+                        const recMonth = String(rec.month || "");
+                        const matchesName = recMonth.toLowerCase().includes(dashboardMonthFilter.toLowerCase()) || 
+                                           String(new Date(rec.date).getMonth() + 1).padStart(2, '0') === dashboardMonthFilter;
+                        if (!matchesName) return false;
+                      }
+                      if (dashboardYearFilter !== "all" && String(rec.year || new Date(rec.date).getFullYear()) !== dashboardYearFilter) return false;
+                      if (dashboardRoleFilter !== "all") {
+                        const recRole = String(rec.personType || rec.role || "").toLowerCase();
+                        if (recRole !== dashboardRoleFilter.toLowerCase()) return false;
+                      }
+                      return true;
+                    });
+
+                    const compileMetrics = (prog: string) => {
+                      const records = filteredRecordsForStats.filter((r: any) => r.eventType === prog);
+                      const mCount = records.filter((r: any) => String(r.personType || r.role || "").toLowerCase() === "member").length;
+                      const wCount = records.filter((r: any) => String(r.personType || r.role || "").toLowerCase() === "worker").length;
+                      return { total: records.length, members: mCount, workers: wCount };
+                    };
+
+                    const sExp = compileMetrics("Sunday Experience");
+                    const wCafe = compileMetrics("Word Cafe");
+                    const sProg = compileMetrics("Special Program");
+
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-5" id="program-metrics-dashboard">
+                        {/* 1. Sunday Experience Card */}
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 rounded-2xl shadow-sm space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-850 pb-3">
+                            <div className="flex items-center gap-2.5">
+                              <span className="p-2.5 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 rounded-xl">📅</span>
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100">Sunday Experience</h4>
+                                <span className="text-[10px] text-slate-400 font-sans">Worship Service Metrics</span>
+                              </div>
+                            </div>
+                            <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{sExp.total}</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{sExp.members}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{sExp.workers}</span>
+                            </div>
+                          </div>
+
+                          {/* Visual progress share bar */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                              <span>Members ({sExp.total > 0 ? Math.round((sExp.members / sExp.total) * 100) : 0}%)</span>
+                              <span>Workers ({sExp.total > 0 ? Math.round((sExp.workers / sExp.total) * 100) : 0}%)</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
+                              <div 
+                                style={{ width: `${sExp.total > 0 ? (sExp.members / sExp.total) * 100 : 50}%` }} 
+                                className="h-full bg-blue-500" 
+                              />
+                              <div 
+                                style={{ width: `${sExp.total > 0 ? (sExp.workers / sExp.total) * 100 : 50}%` }} 
+                                className="h-full bg-violet-500" 
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 2. Word Cafe Card */}
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 rounded-2xl shadow-sm space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-850 pb-3">
+                            <div className="flex items-center gap-2.5">
+                              <span className="p-2.5 bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 rounded-xl">📚</span>
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100">Word Cafe</h4>
+                                <span className="text-[10px] text-slate-400 font-sans">Midweek Study Metrics</span>
+                              </div>
+                            </div>
+                            <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{wCafe.total}</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{wCafe.members}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{wCafe.workers}</span>
+                            </div>
+                          </div>
+
+                          {/* Visual progress share bar */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                              <span>Members ({wCafe.total > 0 ? Math.round((wCafe.members / wCafe.total) * 100) : 0}%)</span>
+                              <span>Workers ({wCafe.total > 0 ? Math.round((wCafe.workers / wCafe.total) * 100) : 0}%)</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
+                              <div 
+                                style={{ width: `${wCafe.total > 0 ? (wCafe.members / wCafe.total) * 100 : 50}%` }} 
+                                className="h-full bg-blue-500" 
+                              />
+                              <div 
+                                style={{ width: `${wCafe.total > 0 ? (wCafe.workers / wCafe.total) * 100 : 50}%` }} 
+                                className="h-full bg-violet-500" 
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* 3. Special Program Card */}
+                        <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 rounded-2xl shadow-sm space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-850 pb-3">
+                            <div className="flex items-center gap-2.5">
+                              <span className="p-2.5 bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 rounded-xl">⭐</span>
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100">Special Program</h4>
+                                <span className="text-[10px] text-slate-400 font-sans">Unique Event Metrics</span>
+                              </div>
+                            </div>
+                            <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{sProg.total}</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{sProg.members}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{sProg.workers}</span>
+                            </div>
+                          </div>
+
+                          {/* Visual progress share bar */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[10px] font-bold text-slate-400">
+                              <span>Members ({sProg.total > 0 ? Math.round((sProg.members / sProg.total) * 100) : 0}%)</span>
+                              <span>Workers ({sProg.total > 0 ? Math.round((sProg.workers / sProg.total) * 105 ? 100 : 0) : 0}%)</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
+                              <div 
+                                style={{ width: `${sProg.total > 0 ? (sProg.members / sProg.total) * 100 : 50}%` }} 
+                                className="h-full bg-blue-500" 
+                              />
+                              <div 
+                                style={{ width: `${sProg.total > 0 ? (sProg.workers / sProg.total) * 100 : 50}%` }} 
+                                className="h-full bg-violet-500" 
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Dynamic triggers for Dev check/automated comparison */}
-                  <div className="bg-blue-50/50 dark:bg-slate-900 border border-blue-150 dark:border-slate-800 p-5 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 no-print shadow-sm">
+                  <div className="bg-blue-50/50 dark:bg-slate-900 border border-blue-150 dark:border-slate-880 p-5 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 no-print shadow-sm">
                     <div className="flex gap-3">
                       <div className="p-2.5 bg-blue-100 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-xl inline-block flex-shrink-0">
                         <Activity size={20} className="animate-pulse" />
@@ -1651,18 +2090,22 @@ export default function App() {
                             const rows = filtered.map((item) => [
                               item.date,
                               `${item.firstName} ${item.lastName}`,
-                              item.personType,
+                              item.personType || item.role || "Member",
+                              item.eventType || "Sunday Experience",
                               item.whatsAppNumber,
+                              item.gender || "Unspecified",
                               item.timestamp,
                             ]);
                             handleExportCSV(
                               rows,
                               [
-                                "Date (Sunday)",
+                                "Date",
                                 "Full Name",
-                                "Category",
+                                "Category (Role)",
+                                "Event Type",
                                 "Phone Number",
-                                "Registered At",
+                                "Gender",
+                                "Logged At Time",
                               ],
                               `church_attendance_history_${Date.now()}.csv`,
                             );
@@ -1782,9 +2225,10 @@ export default function App() {
                         <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
-                              <th className="py-3 px-4">Date (Sunday)</th>
+                              <th className="py-3 px-4">Date</th>
                               <th className="py-3 px-4">Attendee Name</th>
                               <th className="py-3 px-4">Category</th>
+                              <th className="py-3 px-4">Event / Service</th>
                               <th className="py-3 px-4">WhatsApp Phone</th>
                               <th className="py-3 px-4">Gender</th>
                               <th className="py-3 px-4">Registered At</th>
@@ -1794,7 +2238,7 @@ export default function App() {
                             {getFilteredHistory().length === 0 ? (
                               <tr>
                                 <td
-                                  colSpan={6}
+                                  colSpan={7}
                                   className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed"
                                 >
                                   No transaction records found matching filters.
@@ -1816,11 +2260,24 @@ export default function App() {
                                     <span
                                       className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                                         record.personType === "worker"
-                                          ? "bg-violet-50 text-violet-700 dark:bg-violet-950/20 dark:text-violet-400"
-                                          : "bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400"
+                                          ? "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-400"
+                                          : "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"
                                       }`}
                                     >
                                       {record.personType}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span
+                                      className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                                        record.eventType === "Word Cafe"
+                                          ? "bg-violet-100/50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400"
+                                          : record.eventType === "Special Program"
+                                            ? "bg-amber-100/50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                                            : "bg-blue-105-emerald/10 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                                      }`}
+                                    >
+                                      {record.eventType || "Sunday Experience"}
                                     </span>
                                   </td>
                                   <td className="py-3 px-4 font-mono text-xs text-slate-505">
@@ -2469,7 +2926,8 @@ export default function App() {
                   id="settings-tab-panel"
                 >
                   {/* Meta edit settings form */}
-                  <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 sm:p-8 rounded-2xl shadow-sm relative overflow-hidden">
+                  <div className="lg:col-span-2 space-y-6">
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 sm:p-8 rounded-2xl shadow-sm relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500" />
 
                     <div className="mb-6">
@@ -2624,7 +3082,220 @@ export default function App() {
                     </form>
                   </div>
 
-                  {/* Sidebar Database Exports */}
+                  {/* Email configuration form card */}
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 sm:p-8 rounded-2xl shadow-sm relative overflow-hidden">
+                    <div className="absolute top-0 left-0 w-1.5 h-full bg-emerald-500" />
+
+                    <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-lg font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 mb-1">
+                          <Mail size={18} className="text-emerald-500" />
+                          Leader Email Summaries (SMTP)
+                        </h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400">
+                          Configure Nodemailer credentials to send weekly Sunday attendance summary reports to church leaders automatically.
+                        </p>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={emailConfig.enabled}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                enabled: e.target.checked,
+                              })
+                            }
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-slate-200 dark:bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                          <span className="ml-2 text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+                            {emailConfig.enabled ? "Active" : "Disabled"}
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleSaveEmailConfig} className="space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            SMTP Outgoing Host Server
+                          </label>
+                          <input
+                            type="text"
+                            required={emailConfig.enabled}
+                            placeholder="smtp.gmail.com"
+                            value={emailConfig.smtpHost}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                smtpHost: e.target.value,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            Port
+                          </label>
+                          <input
+                            type="number"
+                            required={emailConfig.enabled}
+                            placeholder="587"
+                            value={emailConfig.smtpPort || ""}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                smtpPort: parseInt(e.target.value) || 0,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pl-0.5 pb-2">
+                        <input
+                          type="checkbox"
+                          id="smtpSecure"
+                          checked={emailConfig.smtpSecure}
+                          onChange={(e) =>
+                            setEmailConfig({
+                              ...emailConfig,
+                              smtpSecure: e.target.checked,
+                            })
+                          }
+                          className="rounded border-slate-300 dark:border-slate-800 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        <label htmlFor="smtpSecure" className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                          Use Secure socket layer (SSL/TLS for Port 465)
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            SMTP Auth Authorized Username
+                          </label>
+                          <input
+                            type="email"
+                            required={emailConfig.enabled}
+                            placeholder="church.alerts@gmail.com"
+                            value={emailConfig.smtpAuthUser}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                smtpAuthUser: e.target.value,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            SMTP Auth Access Password / Key
+                          </label>
+                          <input
+                            type="password"
+                            required={emailConfig.enabled}
+                            placeholder="••••••••••••••••"
+                            value={emailConfig.smtpAuthPass}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                smtpAuthPass: e.target.value,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            Sender Address String
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Church Portal <no-reply@church.org>"
+                            value={emailConfig.senderEmail}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                senderEmail: e.target.value,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-500 dark:text-slate-450 uppercase tracking-widest mb-1.5">
+                            Leader Destination Emails (comma separated)
+                          </label>
+                          <input
+                            type="text"
+                            required={emailConfig.enabled}
+                            placeholder="pastor@church.org, secretary@church.org"
+                            value={emailConfig.leaderEmails}
+                            onChange={(e) =>
+                              setEmailConfig({
+                                ...emailConfig,
+                                leaderEmails: e.target.value,
+                              })
+                            }
+                            className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="border-t border-slate-100 dark:border-slate-800 pt-5 mt-5 flex flex-wrap items-center justify-between gap-4">
+                        <button
+                          type="submit"
+                          disabled={isSavingEmailConfig}
+                          className="py-2.5 px-5 bg-emerald-650 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold tracking-wide flex items-center gap-1 cursor-pointer shadow disabled:opacity-50"
+                        >
+                          <Settings size={14} />
+                          {isSavingEmailConfig ? "Saving credentials..." : "Save SMTP credentials"}
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleSendTestEmail}
+                            disabled={isSendingTestEmail}
+                            className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <Send size={14} className="text-slate-500" />
+                            {isSendingTestEmail ? "Transmitting..." : "Send Verification Email"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const latestSun = sundaysList[0] || new Date().toISOString().split("T")[0];
+                              handleTriggerEmailReport(latestSun);
+                            }}
+                            disabled={isTriggeringEmailReport}
+                            className="py-2.5 px-4 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/20 dark:hover:bg-indigo-950/40 dark:text-indigo-400 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <Mail size={14} />
+                            {isTriggeringEmailReport ? "Dispatching..." : "Send Latest Weekly Summary Now"}
+                          </button>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+
+                {/* Sidebar Database Exports */}
                   <div className="space-y-6">
                     <div className="bg-slate-100 dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 rounded-2xl p-6 relative">
                       <h4 className="font-display font-bold text-slate-850 dark:text-slate-100 mb-2">

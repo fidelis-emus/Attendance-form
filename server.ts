@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { MongoClient, ObjectId } from "mongodb";
 import cron from "node-cron";
 import dotenv from "dotenv";
+import nodemailer from "nodemailer";
 
 dotenv.config();
 
@@ -566,27 +567,115 @@ app.post("/api/subscription/apply", async (req, res) => {
   }
 });
 
-// Submit Attendance Form (Public Client endpoint)
-// Submit Attendance Form (Public Client endpoint)
+// Submit Attendance Form (Public Client endpoint or returning scanner checklist)
 app.post("/api/attendance/submit", async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender } = req.body;
+    const { personId, firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender, eventType } = req.body;
 
+    const db = await getDb();
+    const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
+
+    const d = submissionDate ? new Date(submissionDate) : new Date();
+    const hasCustomDate = !!submissionDate;
+    const day = String(hasCustomDate && !isNaN(d.getTime()) ? d.getDate() : new Date().getDate()).padStart(2, '0');
+    const year = String(hasCustomDate && !isNaN(d.getTime()) ? d.getFullYear() : new Date().getFullYear());
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const month = monthNames[hasCustomDate && !isNaN(d.getTime()) ? d.getMonth() : new Date().getMonth()];
+    const time = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+    const selectedEvent = eventType || "Sunday Experience"; // Default fallbacks 
+
+    // CASE 1: Returing user quick-submit using saved/loaded ID
+    if (personId) {
+      let existing = await db.collection("members").findOne({ id: personId });
+      let resolvedType = "member";
+      if (!existing) {
+        existing = await db.collection("workers").findOne({ id: personId });
+        if (existing) {
+          resolvedType = "worker";
+        }
+      }
+
+      if (!existing) {
+        return res.status(404).json({ error: "Profile not found. Please register first." });
+      }
+
+      // Check if duplicate attendance roster exists for the same day and SAME eventType
+      const checkDupRef = await db.collection("attendance").findOne({
+        date: dateUsed,
+        personId: personId,
+        eventType: selectedEvent
+      });
+
+      if (checkDupRef) {
+        return res.json({
+          status: "already_checked_in",
+          personId,
+          personType: resolvedType,
+          firstName: existing.firstName,
+          lastName: existing.lastName,
+          message: "You have already taken attendance for this program today. God Bless you."
+        });
+      }
+
+      const collectionName = resolvedType === "worker" ? "workers" : "members";
+
+      // Update last attendance date
+      await db.collection(collectionName).updateOne(
+        { id: personId },
+        {
+          $set: {
+            lastAttendanceDate: dateUsed,
+            currentStatus: "Present",
+            attendedAtTime: new Date().toISOString(),
+          }
+        }
+      );
+
+      // Record Attendance roster transaction with full fields
+      await db.collection("attendance").insertOne({
+        id: generateId(),
+        date: dateUsed,
+        personId,
+        memberId: personId,
+        personType: resolvedType,
+        role: resolvedType === "worker" ? "Worker" : "Member",
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        whatsAppNumber: existing.whatsAppNumber,
+        gender: existing.gender || "",
+        eventType: selectedEvent,
+        attendanceDate: dateUsed,
+        day,
+        month,
+        year,
+        time,
+        status: "Present",
+        timestamp: new Date().toISOString(),
+      });
+
+      return res.json({
+        status: "success_returning",
+        personId,
+        personType: resolvedType,
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        message: `Welcome back, ${existing.firstName}. Your attendance for today has been recorded successfully. God Bless you and enjoy the rest of the service in God's presence.`
+      });
+    }
+
+    // CASE 2: First-Time Attendance form submit (or check via WhatsApp number fallback)
     if (!firstName || !lastName || !whatsAppNumber || !attendeeType) {
       return res.status(400).json({ error: "Missing required fields (firstName, lastName, whatsAppNumber, attendeeType)" });
     }
 
-    const dateUsed = submissionDate ? submissionDate : getSundayOfDate(new Date());
-    
     // Format phone with + if missing but numeric
     let phoneNum = whatsAppNumber.trim();
     if (!phoneNum.startsWith("+") && /^\d+$/.test(phoneNum)) {
       phoneNum = "+" + phoneNum;
     }
 
-    const db = await getDb();
-    
-    // Find if the person already exists in EITHER collection to prevent duplicates
+    // Find if the person already exists to prevent duplicate profiles
     let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
     let personType = "member";
     if (!existing) {
@@ -598,114 +687,88 @@ app.post("/api/attendance/submit", async (req, res) => {
       personType = "member";
     }
 
-    let personId = "";
+    let activeId = "";
     if (!existing) {
-      // First-Time Attendance
+      // Create new profile
       personType = attendeeType === "worker" ? "worker" : "member";
       const collectionName = personType === "worker" ? "workers" : "members";
-      personId = generateId();
-      
+      activeId = generateId();
+
       await db.collection(collectionName).insertOne({
-        id: personId,
+        id: activeId,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         whatsAppNumber: phoneNum,
         lastAttendanceDate: dateUsed,
         currentStatus: "Present",
         attendedAtTime: new Date().toISOString(),
+        registrationDate: new Date().toISOString(),
         gender: gender || "",
         messageSent: false,
         messageSentDate: null,
         messageDeliveryStatus: null,
       });
-
-      // Insert Attendance transaction record
-      await db.collection("attendance").insertOne({
-        id: generateId(),
-        date: dateUsed,
-        personId,
-        personType,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        whatsAppNumber: phoneNum,
-        gender: gender || "",
-        timestamp: new Date().toISOString(),
-      });
-
-      return res.json({
-        status: "success_new",
-        personId,
-        personType,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        message: "God Bless you. Enjoy the rest of the service in God's presence."
-      });
     } else {
-      // Returning Member or Worker
-      personId = existing.id;
-      const collectionName = personType === "worker" ? "workers" : "members";
+      activeId = existing.id;
+      personType = existing.role || personType;
+    }
 
-      // Check if duplicate attendance roster exists for the same Sunday
-      const checkDupRef = await db.collection("attendance").findOne({
-        date: dateUsed,
-        personId: personId
-      });
+    // Validate Event Duplicates
+    const checkDupRef = await db.collection("attendance").findOne({
+      date: dateUsed,
+      personId: activeId,
+      eventType: selectedEvent
+    });
 
-      if (checkDupRef) {
-        return res.json({
-          status: "already_checked_in",
-          personId,
-          personType,
-          firstName: existing.firstName,
-          lastName: existing.lastName,
-          message: "You have already taken attendance for today. God Bless you."
-        });
-      }
-
-      // Update last attendance date
-      await db.collection(collectionName).updateOne(
-        { id: personId },
-        {
-          $set: {
-            firstName: firstName.trim(),
-            lastName: lastName.trim(),
-            lastAttendanceDate: dateUsed,
-            currentStatus: "Present",
-            attendedAtTime: new Date().toISOString(),
-            gender: gender || existing.gender || "",
-          }
-        }
-      );
-
-      // Record Sunday Attendance roster transaction
-      await db.collection("attendance").insertOne({
-        id: generateId(),
-        date: dateUsed,
-        personId,
-        personType,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        whatsAppNumber: phoneNum,
-        gender: gender || existing.gender || "",
-        timestamp: new Date().toISOString(),
-      });
-
+    if (checkDupRef) {
+      const existingName = existing ? existing.firstName : firstName.trim();
       return res.json({
-        status: "success_returning",
-        personId,
+        status: "already_checked_in",
+        personId: activeId,
         personType,
-        firstName: existing.firstName,
-        lastName: existing.lastName,
-        message: `Welcome back, ${existing.firstName}. Your attendance for today has been recorded successfully. God Bless you and enjoy the rest of the service in God's presence.`
+        firstName: existingName,
+        lastName: existing ? existing.lastName : lastName.trim(),
+        message: "You have already taken attendance for this program today. God Bless you."
       });
     }
+
+    // Record attendance roster transaction with full fields
+    await db.collection("attendance").insertOne({
+      id: generateId(),
+      date: dateUsed,
+      personId: activeId,
+      memberId: activeId,
+      personType: personType,
+      role: personType === "worker" ? "Worker" : "Member",
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      whatsAppNumber: phoneNum,
+      gender: gender || (existing ? existing.gender : "") || "",
+      eventType: selectedEvent,
+      attendanceDate: dateUsed,
+      day,
+      month,
+      year,
+      time,
+      status: "Present",
+      timestamp: new Date().toISOString(),
+    });
+
+    return res.json({
+      status: "success_new",
+      personId: activeId,
+      personType,
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      message: "God Bless you. Enjoy the rest of the service in God's presence."
+    });
   } catch (err: any) {
     console.error("Attendance submission failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Auto Check-in endpoint for Returning scan triggers
+// Auto Check-in / Lookup endpoint for Returning scan triggers (smart recognition)
 app.post("/api/attendance/auto-checkin", async (req, res) => {
   try {
     const { personId, personType, submissionDate } = req.body;
@@ -732,60 +795,32 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
       return res.status(404).json({ error: "Profile not found. Please register first." });
     }
 
-    const collectionName = resolvedType === "worker" ? "workers" : "members";
-
-    // Check duplicate check-in today
-    const checkDupRef = await db.collection("attendance").findOne({
+    // Find which event types this person already took attendance for on this day
+    const attendanceToday = await db.collection("attendance").find({
       date: dateUsed,
       personId: personId
-    });
+    }).toArray();
 
-    if (checkDupRef) {
-      return res.json({
-        status: "already_checked_in",
-        personId,
-        personType: resolvedType,
-        firstName: existing.firstName,
-        lastName: existing.lastName,
-        message: "You have already taken attendance for today. God Bless you."
-      });
-    }
-
-    // Update profile
-    await db.collection(collectionName).updateOne(
-      { id: personId },
-      {
-        $set: {
-          lastAttendanceDate: dateUsed,
-          currentStatus: "Present",
-          attendedAtTime: new Date().toISOString()
-        }
-      }
-    );
-
-    // Record attendance roster transaction
-    await db.collection("attendance").insertOne({
-      id: generateId(),
-      date: dateUsed,
-      personId,
-      personType: resolvedType,
-      firstName: existing.firstName,
-      lastName: existing.lastName,
-      whatsAppNumber: existing.whatsAppNumber,
-      gender: existing.gender || "",
-      timestamp: new Date().toISOString()
-    });
+    const checkedEvents = {
+      "Sunday Experience": attendanceToday.some((a: any) => a.eventType === "Sunday Experience"),
+      "Word Cafe": attendanceToday.some((a: any) => a.eventType === "Word Cafe"),
+      "Special Program": attendanceToday.some((a: any) => a.eventType === "Special Program"),
+    };
 
     return res.json({
-      status: "success_returning",
-      personId,
-      personType: resolvedType,
-      firstName: existing.firstName,
-      lastName: existing.lastName,
-      message: `Welcome back, ${existing.firstName}. Your attendance for today has been recorded successfully. God Bless you and enjoy the rest of the service in God's presence.`
+      success: true,
+      profile: {
+        id: existing.id,
+        firstName: existing.firstName,
+        lastName: existing.lastName,
+        whatsAppNumber: existing.whatsAppNumber,
+        role: resolvedType,
+        gender: existing.gender || "",
+      },
+      checkedEvents
     });
   } catch (err: any) {
-    console.error("Auto check-in failed:", err);
+    console.error("Auto registration lookup failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1850,14 +1885,398 @@ app.post("/api/whatsapp/send-message-proxy", requireSubscription, async (req, re
 });
 
 // ==========================================
+// EMAIL NOTIFICATION SYSTEM (Nodemailer Service)
+// ==========================================
+
+async function sendWeeklyEmailSummary(dateStr: string): Promise<{ success: boolean; message: string; leaderEmails?: string }> {
+  const db = await getDb();
+  const config = await db.collection("settings").findOne({ id: "email_config" }, { projection: { _id: 0 } });
+  
+  if (!config || !config.enabled) {
+    return { success: false, message: "Email notifications are disabled or SMTP settings have not been configured." };
+  }
+  
+  const smtpHost = config.smtpHost;
+  const smtpPort = Number(config.smtpPort) || 587;
+  const smtpSecure = config.smtpSecure !== undefined ? config.smtpSecure : false;
+  const smtpAuthUser = config.smtpAuthUser;
+  const smtpAuthPass = config.smtpAuthPass;
+  const senderEmail = config.senderEmail || "Church Portal <no-reply@church.org>";
+  const leaderEmails = config.leaderEmails;
+  
+  if (!smtpHost || !smtpAuthUser || !smtpAuthPass || !leaderEmails) {
+    return { success: false, message: "SMTP configuration is incomplete. Host, user, password, and leader emails are required." };
+  }
+
+  // Fetch roster & attendance for specific Sunday
+  const [members, workers, attendance] = await Promise.all([
+    db.collection("members").find({}, { projection: { _id: 0 } }).toArray(),
+    db.collection("workers").find({}, { projection: { _id: 0 } }).toArray(),
+    db.collection("attendance").find({ date: dateStr }, { projection: { _id: 0 } }).toArray()
+  ]);
+
+  const totalMembers = members.length;
+  const totalWorkers = workers.length;
+  const totalRoster = totalMembers + totalWorkers;
+
+  const presentIds = new Set(attendance.map((rec: any) => rec.personId));
+  
+  const presentMembers = attendance.filter((rec: any) => rec.personType === "member");
+  const presentWorkers = attendance.filter((rec: any) => rec.personType === "worker");
+  
+  const absentMembersList = members.filter((m: any) => !presentIds.has(m.id));
+  const absentWorkersList = workers.filter((w: any) => !presentIds.has(w.id));
+
+  const countPresentMembers = presentMembers.length;
+  const countPresentWorkers = presentWorkers.length;
+  const countTotalPresent = attendance.length;
+
+  const countAbsentMembers = absentMembersList.length;
+  const countAbsentWorkers = absentWorkersList.length;
+  const countTotalAbsent = countAbsentMembers + countAbsentWorkers;
+
+  const attendancePercentage = totalRoster > 0 ? Math.round((countTotalPresent / totalRoster) * 100) : 0;
+
+  // Breakdown by event/service
+  const eventBreakdown: Record<string, number> = {};
+  attendance.forEach((rec: any) => {
+    const et = rec.eventType || "Sunday Experience";
+    eventBreakdown[et] = (eventBreakdown[et] || 0) + 1;
+  });
+
+  let eventRows = "";
+  Object.entries(eventBreakdown).forEach(([name, count]) => {
+    eventRows += `
+      <tr>
+        <td style="padding: 12px 10px; border-bottom: 1px solid #f1f5f9; font-weight: bold; color: #475569;">${name}</td>
+        <td style="padding: 12px 10px; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: bold; color: #0f172a;">${count} Present</td>
+      </tr>
+    `;
+  });
+
+  if (!eventRows) {
+    eventRows = `<tr><td colspan="2" style="padding: 15px; text-align: center; color: #94a3b8; font-style: italic;">No session entries recorded.</td></tr>`;
+  }
+
+  // Inline formatting helper
+  const renderEmailList = (list: any[]) => {
+    if (list.length === 0) return `<p style="color: #94a3b8; font-style: italic; font-size: 13px; margin: 5px 0 0 0;">(None recorded)</p>`;
+    const maxShow = 15;
+    const displayed = list.slice(0, maxShow);
+    const hiddenCount = list.length - displayed.length;
+    let html = `<ul style="margin: 6px 0 0 0; padding-left: 20px; color: #334155; font-size: 13px; line-height: 1.5;">`;
+    displayed.forEach((p) => {
+      const displayRole = p.role || p.personType || "";
+      const roleBadge = displayRole ? ` <span style="font-size: 10px; color: #64748b; background-color: #f1f5f9; padding: 2px 5px; border-radius: 4px;">${displayRole}</span>` : "";
+      html += `<li style="margin-bottom: 5px;"><strong>${p.firstName} ${p.lastName}</strong>${roleBadge}</li>`;
+    });
+    html += `</ul>`;
+    if (hiddenCount > 0) {
+      html += `<p style="font-size: 12px; color: #6366f1; font-weight: bold; margin: 5px 0 0 20px;">+ ${hiddenCount} more individuals...</p>`;
+    }
+    return html;
+  };
+
+  const presentHtml = renderEmailList([...presentMembers, ...presentWorkers]);
+  const absentHtml = renderEmailList([...absentMembersList, ...absentWorkersList]);
+
+  // Modern response HTML Layout
+  const htmlBody = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Church Attendance Dashboard Summary</title>
+    </head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b; padding: 20px 10px; margin: 0; -webkit-font-smoothing: antialiased;">
+      <div style="max-width: 650px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+        
+        <!-- Header banner -->
+        <div style="background-color: #4f46e5; padding: 30px; text-align: center; color: #ffffff;">
+          <span style="font-size: 32px; display: block; margin-bottom: 8px;">⛪</span>
+          <h1 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.025em;">Church Weekly Attendance Report</h1>
+          <p style="margin: 6px 0 0 0; font-size: 13px; color: #c7d2fe; font-weight: bold; letter-spacing: 0.05em; text-transform: uppercase;">Service Date: ${dateStr}</p>
+        </div>
+
+        <!-- content body -->
+        <div style="padding: 25px 30px;">
+          <p style="margin-top: 0; font-size: 15px; line-height: 1.6; color: #334155;">
+            Dear Pastor and Leadership Team,
+          </p>
+          <p style="font-size: 15px; line-height: 1.6; color: #334155; margin-bottom: 25px;">
+            Here is the automated weekly church service enrollment and follow-up report compiled for <strong>${dateStr}</strong>. This system tracking assures precise database coverage.
+          </p>
+
+          <!-- Core stats table cards -->
+          <table style="width: 100%; border-spacing: 12px; border-collapse: separate; margin: 0 -12px 20px -12px;">
+            <tr>
+              <td style="width: 50%; background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 12px; padding: 15px; text-align: center; vertical-align: middle;">
+                <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #065f46; font-weight: bold; display: block; margin-bottom: 4px;">Total Present</span>
+                <strong style="font-size: 28px; color: #047857; display: block;">${countTotalPresent}</strong>
+                <span style="font-size: 11px; color: #065f46; margin-top: 2px; display: block;">${countPresentMembers} Members • ${countPresentWorkers} Workers</span>
+              </td>
+              <td style="width: 50%; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 12px; padding: 15px; text-align: center; vertical-align: middle;">
+                <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #991b1b; font-weight: bold; display: block; margin-bottom: 4px;">Total Absent</span>
+                <strong style="font-size: 28px; color: #b91c1c; display: block;">${countTotalAbsent}</strong>
+                <span style="font-size: 11px; color: #991b1b; margin-top: 2px; display: block;">${countAbsentMembers} Members • ${countAbsentWorkers} Workers</span>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Roster Metric Overview Progress -->
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 25px;">
+            <strong style="font-size: 14px; color: #0f172a; display: block; margin-bottom: 6px;">Total Database Base Coverage:</strong>
+            <div style="color: #475569; font-size: 13px; margin-bottom: 8px;">
+              Registered congregation size: <strong>${totalRoster}</strong> (Members: ${totalMembers}, Workers: ${totalWorkers})
+            </div>
+            
+            <!-- Progress Bar -->
+            <div style="background-color: #e2e8f0; height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 4px;">
+              <div style="background-color: #10b981; width: ${attendancePercentage}%; height: 100%; border-radius: 5px;"></div>
+            </div>
+            <div style="text-align: right; font-size: 12px; font-weight: bold; color: #059669;">
+               Attendance Rate: ${attendancePercentage}%
+            </div>
+          </div>
+
+          <!-- Section: Breakdown by Event / Service -->
+          <h3 style="font-size: 15px; font-weight: bold; color: #0f172a; border-bottom: 2px solid #f1f5f9; padding-bottom: 8px; margin-top: 0; margin-bottom: 12px;">⏰ Service Program Breakdowns</h3>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 25px;">
+            <thead>
+              <tr style="background-color: #f8fafc; border-bottom: 2px solid #e2e8f0; text-align: left;">
+                <th style="padding: 10px; color: #64748b; font-weight: bold;">Program Type</th>
+                <th style="padding: 10px; text-align: right; color: #64748b; font-weight: bold;">Present Tally</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${eventRows}
+            </tbody>
+          </table>
+
+          <!-- Section: Lists breakdown -->
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="width: 50%; vertical-align: top; padding-right: 15px; border-right: 1px solid #e2e8f0;">
+                <h4 style="font-size: 13px; font-weight: bold; color: #10b981; margin-top: 0; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em;">
+                  🟢 Present Entries (${countTotalPresent})
+                </h4>
+                ${presentHtml}
+              </td>
+              <td style="width: 50%; vertical-align: top; padding-left: 15px;">
+                <h4 style="font-size: 13px; font-weight: bold; color: #ef4444; margin-top: 0; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em;">
+                  🔴 Absent Entries (${countTotalAbsent})
+                </h4>
+                ${absentHtml}
+              </td>
+            </tr>
+          </table>
+
+        </div>
+
+        <!-- Footer -->
+        <div style="background-color: #f1f5f9; padding: 20px 30px; text-align: center; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
+          <p style="margin: 0 0 5px 0; font-weight: bold; color: #475569;">Attendance Administration Portal - Backups System</p>
+          <p style="margin: 0; font-size: 11px; line-height: 1.4;">
+            This communication was sent automatically based on active weekly scheduler rules. If you wish to adjust SMTP settings or unsubscribe leader emails, please modify settings in the Church Portal Settings panel.
+          </p>
+        </div>
+
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Establish nodemailer transporter
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: Number(smtpPort) || 587,
+    secure: !!smtpSecure,
+    auth: {
+      user: smtpAuthUser,
+      pass: smtpAuthPass
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000
+  });
+
+  const mailOptions = {
+    from: senderEmail,
+    to: leaderEmails,
+    subject: `📊 Attendance Report Summary: ${dateStr} (${attendancePercentage}% Rate)`,
+    html: htmlBody
+  };
+
+  await transporter.sendMail(mailOptions);
+  return { success: true, message: `Weekly email report successfully delivered to: ${leaderEmails}`, leaderEmails };
+}
+
+// EMAIL EXPRESS ENDPOINTS
+app.get("/api/email/config", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const doc = await db.collection("settings").findOne({ id: "email_config" }, { projection: { _id: 0 } });
+    if (doc) {
+      res.json({
+        smtpHost: doc.smtpHost || "",
+        smtpPort: doc.smtpPort || 587,
+        smtpSecure: doc.smtpSecure !== undefined ? doc.smtpSecure : false,
+        smtpAuthUser: doc.smtpAuthUser || "",
+        smtpAuthPass: doc.smtpAuthPass || "",
+        senderEmail: doc.senderEmail || "Church Portal <no-reply@church.org>",
+        leaderEmails: doc.leaderEmails || "",
+        enabled: doc.enabled !== undefined ? doc.enabled : false,
+      });
+    } else {
+      res.json({
+        smtpHost: "",
+        smtpPort: 587,
+        smtpSecure: false,
+        smtpAuthUser: "",
+        smtpAuthPass: "",
+        senderEmail: "Church Portal <no-reply@church.org>",
+        leaderEmails: "",
+        enabled: false,
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/email/config", requireSubscription, async (req, res) => {
+  try {
+    const { smtpHost, smtpPort, smtpSecure, smtpAuthUser, smtpAuthPass, senderEmail, leaderEmails, enabled, adminEmail, adminId } = req.body;
+    const db = await getDb();
+
+    await db.collection("settings").updateOne(
+      { id: "email_config" },
+      {
+        $set: {
+          id: "email_config",
+          smtpHost: smtpHost || "",
+          smtpPort: Number(smtpPort) || 587,
+          smtpSecure: !!smtpSecure,
+          smtpAuthUser: smtpAuthUser || "",
+          smtpAuthPass: smtpAuthPass || "",
+          senderEmail: senderEmail || "Church Portal <no-reply@church.org>",
+          leaderEmails: leaderEmails || "",
+          enabled: !!enabled,
+        }
+      },
+      { upsert: true }
+    );
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Configured automated weekly leadership email notifications (SMTP Host: ${smtpHost || 'N/A'}, Enabled: ${!!enabled})`
+    );
+
+    res.json({ success: true, message: "Email configuration saved securely." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/email/send-test-email", requireSubscription, async (req, res) => {
+  try {
+    const { smtpHost, smtpPort, smtpSecure, smtpAuthUser, smtpAuthPass, senderEmail, leaderEmails, adminId, adminEmail } = req.body;
+    if (!smtpHost || !smtpAuthUser || !smtpAuthPass || !leaderEmails) {
+      return res.status(400).json({ error: "Missing required SMTP parameters or leader email recipients." });
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: Number(smtpPort) || 587,
+      secure: !!smtpSecure,
+      auth: {
+        user: smtpAuthUser,
+        pass: smtpAuthPass
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000
+    });
+
+    const mailOptions = {
+      from: senderEmail || "Church Portal <no-reply@church.org>",
+      to: leaderEmails,
+      subject: "🔔 Church Attendance Management System - SMTP Test Email",
+      html: `
+        <div style="font-family: sans-serif; padding: 25px; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <h2 style="color: #4f46e5; border-bottom: 2px solid #f1f5f9; padding-bottom: 12px; margin-top: 0;">Connection Successful!</h2>
+          <p>Hello Church Leader,</p>
+          <p>This is a verification notification confirming that the **SMTP Email notification service** for your Church Attendance Portal is configured correctly and successfully connected to your servers.</p>
+          <div style="background-color: #f8fafc; border-left: 4px solid #4f46e5; padding: 15px; margin: 20px 0; border-radius: 6px; font-size: 14px;">
+            <strong style="color: #1e293b; display: block; margin-bottom: 5px;">Verification Parameters:</strong>
+            • SMTP Host: <code style="background-color: #e2e8f0; padding: 2px 4px; border-radius: 4px; font-family: monospace;">${smtpHost}</code><br/>
+            • Connection Port: <code style="background-color: #e2e8f0; padding: 2px 4px; border-radius: 4px; font-family: monospace;">${smtpPort}</code><br/>
+            • Sender Authorized User: <code style="background-color: #e2e8f0; padding: 2px 4px; border-radius: 4px; font-family: monospace;">${smtpAuthUser}</code>
+          </div>
+          <p style="font-size: 13px; color: #64748b; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 15px;">
+            This verification email was triggered manually by church administrator <strong>${adminEmail || "Admin"}</strong>. All stats look great and are ready for dissemination.
+          </p>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Dispatched temporary SMTP connection test communication mail to ${leaderEmails}`
+    );
+
+    res.json({ success: true, message: `Verification test email sent to ${leaderEmails} successfully!` });
+  } catch (err: any) {
+    console.error("Test email failure details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/email/trigger-weekly-report", requireSubscription, async (req, res) => {
+  try {
+    const { date, adminId, adminEmail } = req.body;
+    const targetDate = date || getSundayOfDate(new Date());
+    
+    console.log(`Manual trigger of weekly email attendance summary for date: ${targetDate}`);
+    const result = await sendWeeklyEmailSummary(targetDate);
+    
+    if (result.success) {
+      await addAuditLog(
+        adminId || "unknown",
+        adminEmail || "admin@church.org",
+        `Dispatched weekly church attendance summary email to leaders for Sunday ${targetDate}`
+      );
+      res.json({ success: true, message: result.message, leaderEmails: result.leaderEmails });
+    } else {
+      res.status(400).json({ success: false, error: result.message });
+    }
+  } catch (err: any) {
+    console.error("Manual report trigger exception:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
 // SCHEDULER (Cron Job)
 // ==========================================
 
 // At exactly 6 PM every Sunday (0 18 * * 0)
 cron.schedule("0 18 * * 0", async () => {
   try {
+    const todaySun = getSundayOfDate(new Date());
+    // Run WhatsApp follow-ups
     const result = await executeSundayFollowups();
     console.log(`Automated Sunday 6:00 PM CRON completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+    
+    // Attempt Email Automated Summary to leaders as backup
+    try {
+      const emailResult = await sendWeeklyEmailSummary(todaySun);
+      console.log(`Automated Weekly Email Report result: ${emailResult.message}`);
+    } catch (emailErr: any) {
+      console.error("[Automated Email Scheduler] Failed sending weekly email summary:", emailErr.message);
+    }
   } catch (err) {
     console.error("CRON task failed during background calculation:", err);
   }
