@@ -1341,17 +1341,29 @@ app.get("/api/admins", requireSubscription, async (req, res) => {
 app.post("/api/admins", requireSubscription, async (req, res) => {
   try {
     const { id, email, role, adminEmail, adminId } = req.body;
-    if (!email || !role || !id) {
-      return res.status(400).json({ error: "Missing parameters" });
+    if (!email || !role) {
+      return res.status(400).json({ error: "Missing parameters: email and role are required." });
     }
     const db = await getDb();
+    const emailLower = email.trim().toLowerCase();
+    
+    let adminUniqueId = id;
+    if (!adminUniqueId) {
+      // Find if email already exists in admins
+      const existing = await db.collection("admins").findOne({ email: emailLower });
+      if (existing) {
+        adminUniqueId = existing.id;
+      } else {
+        adminUniqueId = generateId();
+      }
+    }
     
     await db.collection("admins").updateOne(
-      { id },
+      { id: adminUniqueId },
       {
         $set: {
-          id,
-          email: email.trim().toLowerCase(),
+          id: adminUniqueId,
+          email: emailLower,
           role,
         }
       },

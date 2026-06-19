@@ -1061,8 +1061,8 @@ export default function App() {
       );
       return;
     }
-    if (!newAdmin.id || !newAdmin.email) {
-      addNotification("Please fill in Admin UID and Email", "error");
+    if (!newAdmin.email) {
+      addNotification("Please fill in Admin Email", "error");
       return;
     }
 
@@ -1071,7 +1071,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: newAdmin.id,
+          id: newAdmin.id || "",
           email: newAdmin.email.trim().toLowerCase(),
           role: newAdmin.role,
           adminEmail: user?.email,
@@ -1645,31 +1645,6 @@ export default function App() {
                 credentials. Only authorized personnel can manage the church
                 attendance database.
               </p>
-
-              {/* Dynamic Credentials helper block */}
-              <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-900/40 rounded-2xl p-4 mb-6 text-left shadow-sm">
-                <span className="block text-[11px] font-bold text-amber-800 dark:text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                  🔑 System Login Credentials
-                </span>
-                <div className="space-y-1 text-xs text-slate-700 dark:text-slate-350">
-                  <div className="flex justify-between py-0.5 border-b border-amber-200/30 dark:border-amber-900/10">
-                    <span className="font-semibold text-slate-500 dark:text-slate-450">
-                      Email:
-                    </span>
-                    <code className="bg-amber-100/50 dark:bg-amber-950/60 px-1.5 py-0.5 rounded font-mono select-all">
-                      fidelisemus@gmail.com
-                    </code>
-                  </div>
-                  <div className="flex justify-between py-0.5">
-                    <span className="font-semibold text-slate-500 dark:text-slate-450">
-                      Password:
-                    </span>
-                    <code className="bg-amber-100/50 dark:bg-amber-950/60 px-1.5 py-0.5 rounded font-mono select-all">
-                      admin123
-                    </code>
-                  </div>
-                </div>
-              </div>
 
               {authError && (
                 <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 text-rose-600 dark:text-rose-450 rounded-xl text-xs font-semibold mb-5 text-left">
@@ -4839,26 +4814,6 @@ export default function App() {
                         }
                         className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-100 text-sm focus:outline-none"
                       />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                        Google Firebase UID
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="U92MNSa92hN8ns..."
-                        value={newAdmin.id}
-                        onChange={(e) =>
-                          setNewAdmin({ ...newAdmin, id: e.target.value })
-                        }
-                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-100 font-mono text-xs focus:outline-none"
-                      />
-                      <span className="block text-[10px] text-slate-450 mt-1 italic leading-tight">
-                        Admins must provide their Firebase Authentication unique
-                        ID (visible after trying to log in).
-                      </span>
                     </div>
 
                     <div>
