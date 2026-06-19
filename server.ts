@@ -1492,6 +1492,142 @@ app.delete("/api/sundays/:date", requireSubscription, async (req, res) => {
   }
 });
 
+// ==========================================
+// QUICK REPLY TEMPLATES ENDPOINTS
+// ==========================================
+
+// GET all Quick Replies (Seed with 5 default options if collection is empty)
+app.get("/api/quick-replies", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    let replies = await db.collection("quick_replies").find({}, { projection: { _id: 0 } }).toArray();
+    
+    if (replies.length === 0) {
+      const defaultReplies = [
+        {
+          id: "qr_welcome",
+          title: "Welcome Greeting",
+          content: "Hello {name}, welcome to our church family! We are thrilled to have you. Please feel free to reach out if you have any questions or prayer requests."
+        },
+        {
+          id: "qr_timings",
+          title: "Service Timings",
+          content: "Hi {name}! Our services hold every Sunday: First Service starts at 8:00 AM, Second Service at 10:30 AM. Midweek Word Cafe is every Wednesday at 6:00 PM. See you soon!"
+        },
+        {
+          id: "qr_prayer",
+          title: "Prayer Request Support",
+          content: "Dear {name}, we stand in faith with you. Please reply with your prayer requests so our pastors and intercessors can pray for you. 'The effective prayer of a righteous person has great power.'"
+        },
+        {
+          id: "qr_tithing",
+          title: "Tithes & Offerings Guidance",
+          content: "Greetings {name}, thank you for your generosity in supporting God's work. You can give online via our secure platform or text giving. May God multiply your seed sown!"
+        },
+        {
+          id: "qr_absentee",
+          title: "Absentee Follow-up Inquiry",
+          content: "Hello {name}, we missed you at our service last Sunday! Hope you are doing well. Let us know if you need any prayers or support."
+        }
+      ];
+      await db.collection("quick_replies").insertMany(defaultReplies);
+      replies = defaultReplies;
+    }
+    
+    res.json(replies);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST to ADD or UPDATE a Quick Reply
+app.post("/api/quick-replies", requireSubscription, async (req, res) => {
+  try {
+    const { id, title, content, adminEmail, adminId } = req.body;
+    if (!title || !content) {
+      return res.status(400).json({ error: "Title and content are required for Quick Reply templates." });
+    }
+    
+    const db = await getDb();
+    const qrId = id || "qr_" + generateId();
+    
+    await db.collection("quick_replies").updateOne(
+      { id: qrId },
+      {
+        $set: {
+          id: qrId,
+          title,
+          content,
+          updatedAt: new Date().toISOString()
+        }
+      },
+      { upsert: true }
+    );
+    
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      id ? `Updated Quick Reply template: "${title}"` : `Created Quick Reply template: "${title}"`
+    );
+    
+    res.json({ success: true, id: qrId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE a Quick Reply
+app.delete("/api/quick-replies/:id", requireSubscription, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { adminEmail, adminId } = req.body;
+    const db = await getDb();
+    
+    const qr = await db.collection("quick_replies").findOne({ id });
+    const qrTitle = qr ? qr.title : "Unknown";
+    
+    await db.collection("quick_replies").deleteOne({ id });
+    
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Deleted Quick Reply template: "${qrTitle}"`
+    );
+    
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET Backup Status Metadata
+app.get("/api/backup/status", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const statusDoc = await db.collection("settings").findOne({ id: "backup_status" });
+    
+    if (!statusDoc) {
+      return res.json({
+        lastBackupDate: null,
+        daysSinceLastBackup: null,
+        isOverdue: true
+      });
+    }
+    
+    const lastBackupDate = statusDoc.lastBackupDate;
+    const diffMs = Date.now() - new Date(lastBackupDate).getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    res.json({
+      lastBackupDate,
+      daysSinceLastBackup: diffDays,
+      isOverdue: diffDays > 7
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET system audit logs
 app.get("/api/audit-logs", requireSubscription, async (req, res) => {
   try {
@@ -1587,6 +1723,13 @@ app.get("/api/backup/export", requireSubscription, async (req, res) => {
     for (const col of collections) {
       backup[col] = await db.collection(col).find({}, { projection: { _id: 0 } }).toArray();
     }
+
+    // Save successful backup status
+    await db.collection("settings").updateOne(
+      { id: "backup_status" },
+      { $set: { id: "backup_status", lastBackupDate: new Date().toISOString() } },
+      { upsert: true }
+    );
 
     const pad = (n: number) => String(n).padStart(2, "0");
     const d = new Date();
@@ -1720,6 +1863,79 @@ app.post("/api/whatsapp/resend", requireSubscription, async (req, res) => {
       adminId || "unknown", 
       adminEmail || "admin@church.org", 
       `Manually resent WhatsApp message to ${personName} (${whatsAppNumber})`
+    );
+
+    if (deliveryStatus === "Failed") {
+      return res.status(200).json({ success: false, error: errorMessage || "Failed to deliver via Meta WhatsApp Business API." });
+    }
+
+    res.json({ success: true, wamid });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send Custom WhatsApp message (Dynamic Quick Reply)
+app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
+  try {
+    const { personId, personType, personName, whatsAppNumber, messageContent, adminEmail, adminId } = req.body;
+    
+    if (!whatsAppNumber || !messageContent) {
+      return res.status(400).json({ error: "Missing required WhatsApp number or message content." });
+    }
+
+    const db = await getDb();
+    const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
+
+    let deliveryStatus: "Sent" | "Failed" = "Sent";
+    let wamid = null;
+    let errorMessage = "";
+
+    try {
+      if (config && config.phoneNumberId && config.accessToken) {
+        const data = await sendWhatsAppMessage(config, whatsAppNumber, messageContent);
+        wamid = data.messages?.[0]?.id || null;
+      } else {
+        throw new Error("Meta credentials missing - falling back to manual");
+      }
+    } catch (sendErr: any) {
+      console.error("Meta sending error during custom dispatch:", sendErr);
+      deliveryStatus = "Failed";
+      errorMessage = sendErr.message;
+    }
+
+    const logId = generateId();
+    await db.collection("whatsapp_logs").insertOne({
+      id: logId,
+      personId: personId || "adhoc_recipient",
+      personName: personName || "Adhoc Recipient",
+      personType: personType || "Adhoc",
+      whatsAppNumber,
+      messageType: "Quick Reply Template",
+      messageContent,
+      sentAt: new Date().toISOString(),
+      deliveryStatus,
+      wamid,
+    });
+
+    if (personId && personId !== "adhoc_recipient") {
+      const personCol = personType === "worker" ? "workers" : "members";
+      await db.collection(personCol).updateOne(
+        { id: personId },
+        {
+          $set: {
+            messageSent: true,
+            messageSentDate: new Date().toISOString(),
+            messageDeliveryStatus: deliveryStatus,
+          }
+        }
+      );
+    }
+
+    await addAuditLog(
+      adminId || "unknown", 
+      adminEmail || "admin@church.org", 
+      `Dispatched Quick Reply message to ${personName || whatsAppNumber} (${whatsAppNumber})`
     );
 
     if (deliveryStatus === "Failed") {
@@ -2592,8 +2808,155 @@ app.post("/api/email/trigger-weekly-report", requireSubscription, async (req, re
 });
 
 // ==========================================
+// BACKUP HEALTH & AUTOMATED NOTIFICATION SERVICE
+// ==========================================
+
+async function checkBackupStatusAndAlert() {
+  try {
+    const db = await getDb();
+    const backupDoc = await db.collection("settings").findOne({ id: "backup_status" });
+    const emailConfig = await db.collection("settings").findOne({ id: "email_config" });
+    
+    if (!emailConfig) {
+      console.log("[Backup Checker] No email config is defined in Settings. Skipping backup alert dispatch.");
+      return { success: false, message: "SMTP details missing in Settings." };
+    }
+    
+    const smtpHost = emailConfig.smtpHost;
+    const smtpPort = Number(emailConfig.smtpPort) || 587;
+    const smtpSecure = emailConfig.smtpSecure !== undefined ? emailConfig.smtpSecure : false;
+    const smtpAuthUser = emailConfig.smtpAuthUser;
+    const smtpAuthPass = emailConfig.smtpAuthPass;
+    const senderEmail = emailConfig.senderEmail || "Church Portal <no-reply@church.org>";
+
+    if (!smtpHost || !smtpAuthUser || !smtpAuthPass) {
+      console.log("[Backup Checker] SMTP criteria incomplete. Skipping backup warning email dispatch.");
+      return { success: false, message: "SMTP configuration incomplete." };
+    }
+
+    let overdue = false;
+    let lastBackupDate: string | null = null;
+    
+    if (!backupDoc) {
+      overdue = true;
+    } else {
+      lastBackupDate = backupDoc.lastBackupDate ? String(backupDoc.lastBackupDate) : null;
+      if (!lastBackupDate) {
+        overdue = true;
+      } else {
+        const diffMs = Date.now() - new Date(lastBackupDate).getTime();
+        const diffDays = diffMs / (1000 * 60 * 60 * 24);
+        if (diffDays > 7) {
+          overdue = true;
+        }
+      }
+    }
+
+    if (overdue) {
+      console.log("[Backup Checker] Database backup is OVERDUE! dispatching alert warning email to Super Admins...");
+      
+      const admins = await db.collection("admins").find({ role: "Super Admin" }).toArray();
+      const adminEmails = new Set<string>();
+      
+      admins.forEach((admin: any) => {
+        if (admin.email) adminEmails.add(admin.email);
+      });
+      // Always include bootstrapped super admin as fallback recipient
+      adminEmails.add("fidelisemus@gmail.com");
+
+      const recipients = Array.from(adminEmails);
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpSecure,
+        auth: {
+          user: smtpAuthUser,
+          pass: smtpAuthPass
+        },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000
+      });
+
+      const lastBackupStr = lastBackupDate 
+        ? `${new Date(lastBackupDate).toLocaleDateString()} at ${new Date(lastBackupDate).toLocaleTimeString()}`
+        : "No database backup has EVER been taken!";
+
+      const mailOptions = {
+        from: senderEmail,
+        to: recipients.join(", "),
+        subject: "⚠️ ACTION REQUIRED: Church Portal Database Backup Overdue (7+ Days)",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #fee2e2; border-radius: 16px; background-color: #fffbfa;">
+            <div style="display: flex; align-items: center; margin-bottom: 20px;">
+              <span style="font-size: 32px; margin-right: 12px;">🚨</span>
+              <h2 style="color: #dc2626; margin: 0; font-size: 20px; font-weight: 800; font-family: sans-serif;">Church Portal: Database Backup Overdue</h2>
+            </div>
+            
+            <p style="font-size: 14px; color: #475569; line-height: 1.6;">Dear Super Administrator,</p>
+            <p style="font-size: 14px; color: #475569; line-height: 1.6;">Our system security checker has detected that <strong>no successful database backup has been performed in the last 7 days</strong>.</p>
+            
+            <div style="background-color: #ffffff; border: 1px solid #fee2e2; border-left: 4px solid #ef4444; border-radius: 8px; padding: 16px; margin: 20px 0;">
+              <div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: bold; letter-spacing: 0.05em; margin-bottom: 4px;">Backup Status Overview</div>
+              <div style="font-size: 14px; color: #1e293b; font-weight: 700;">
+                \${lastBackupStr}
+              </div>
+              <div style="font-size: 12px; color: #ef4444; font-weight: 600; margin-top: 6px;">
+                Status: Overdue (Maximum safety threshold is 7 days)
+              </div>
+            </div>
+            
+            <p style="font-size: 14px; color: #475569; line-height: 1.6; margin-bottom: 24px;">Regularly exporting backup files is vital to protect against unexpected server faults, data loss, and to maintain structural integrity of member directories and check-in logs.</p>
+            
+            <div style="text-align: center; margin-bottom: 24px;">
+              <a href="https://ais-pre-f3z75ujgomwegtwcwcpynd-50487580477.europe-west2.run.app/admin" style="display: inline-block; background-color: #dc2626; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 700; padding: 12px 24px; border-radius: 12px; border: none;">
+                Sign In to Backup Now
+              </a>
+            </div>
+            
+            <p style="font-size: 11px; color: #94a3b8; text-align: center; border-top: 1px solid #f1f5f9; padding-top: 16px; margin-top: 30px;">
+              This is a critical maintenance alert sent automatically to all active <strong>Super Admin</strong> profiles. 
+              SMTP options can be customized dynamically in the Church Settings panel.
+            </p>
+          </div>
+        `
+      };
+
+      await transporter.sendMail(mailOptions);
+      console.log(`[Backup Checker] SUCCESS: Overdue backup alert sent successfully to \${recipients.join(", ")}`);
+      return { success: true, alerted: true, recipients };
+    } else {
+      console.log("[Backup Checker] Backup status is fully healthy. No alert required.");
+      return { success: true, alerted: false };
+    }
+  } catch (err: any) {
+    console.error("[Backup Checker] Failed checking backup overdue alerts:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+app.post("/api/backup/check-manual", requireSubscription, async (req, res) => {
+  try {
+    const result = await checkBackupStatusAndAlert();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
 // SCHEDULER (Cron Jobs)
 // ==========================================
+
+// Check database backup status once every day at 9:00 AM (0 9 * * *)
+cron.schedule("0 9 * * *", async () => {
+  try {
+    console.log("[Automated Scheduler] Checking database backup frequency health...");
+    await checkBackupStatusAndAlert();
+  } catch (err) {
+    console.error("Backup frequency schedule execution failed:", err);
+  }
+});
 
 // Wednesday at exactly 10:00 AM (0 10 * * 3)
 cron.schedule("0 10 * * 3", async () => {

@@ -196,6 +196,18 @@ export default function App() {
     Array<{ id: string; msg: string; type: "success" | "error" | "info" }>
   >([]);
 
+  // Quick Reply States
+  const [quickReplies, setQuickReplies] = useState<any[]>([]);
+  const [campaignSubTab, setCampaignSubTab] = useState<"logs" | "templates">("logs");
+  const [showAddQuickReplyModal, setShowAddQuickReplyModal] = useState(false);
+  const [quickReplyForm, setQuickReplyForm] = useState({ id: "", title: "", content: "" });
+  const [selectedPersonForQuickReply, setSelectedPersonForQuickReply] = useState<string>("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [quickReplyMessagePreview, setQuickReplyMessagePreview] = useState<string>("");
+  const [isSendingQuickReply, setIsSendingQuickReply] = useState(false);
+  const [backupStatus, setBackupStatus] = useState<any>(null);
+  const [isCheckingBackup, setIsCheckingBackup] = useState(false);
+
   // Load APP URL for redirection
   const [appUrl, setAppUrl] = useState("");
 
@@ -418,6 +430,8 @@ export default function App() {
         "/api/audit-logs",
         "/api/sundays",
         "/api/email/config",
+        "/api/quick-replies",
+        "/api/backup/status",
       ];
 
       const responses = await Promise.all(
@@ -445,6 +459,8 @@ export default function App() {
         auditLogsData,
         sundaysData,
         emailConfigData,
+        quickRepliesData,
+        backupStatusData,
       ] = responses;
 
       const statsVal = statsData && !statsData.error ? statsData : {};
@@ -482,6 +498,13 @@ export default function App() {
       }
       setAdminsList(adminsListRes);
       setAuditLogs(sortedAuditLogs);
+      
+      if (Array.isArray(quickRepliesData)) {
+        setQuickReplies(quickRepliesData);
+      }
+      if (backupStatusData && !backupStatusData.error) {
+        setBackupStatus(backupStatusData);
+      }
     } catch (err: any) {
       addNotification("Error syncing client tables: " + err.message, "error");
     }
@@ -933,6 +956,167 @@ export default function App() {
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
+    }
+  };
+
+  // Save or update Quick Reply Template
+  const handleSaveQuickReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied. Pastors cannot manage templates.", "error");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/quick-replies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: quickReplyForm.id || undefined,
+          title: quickReplyForm.title,
+          content: quickReplyForm.content,
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to save template.");
+
+      addNotification(`Template "${quickReplyForm.title}" saved successfully!`, "success");
+      setShowAddQuickReplyModal(false);
+      setQuickReplyForm({ id: "", title: "", content: "" });
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  // Delete Template
+  const handleDeleteQuickReply = async (id: string, title: string) => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied. Pastors cannot delete templates.", "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete the template "${title}"?`)) return;
+
+    try {
+      const response = await fetch(`/api/quick-replies/${id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to delete template.");
+
+      addNotification(`Template "${title}" deleted successfully!`, "success");
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  // Send selected template out to the specified person
+  const handleSendQuickReply = async () => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied. Pastors cannot send messages.", "error");
+      return;
+    }
+    if (!selectedPersonForQuickReply) {
+      addNotification("Please select a recipient first.", "error");
+      return;
+    }
+    if (!selectedTemplateId) {
+      addNotification("Please select a message template first.", "error");
+      return;
+    }
+
+    const [pId, pType] = selectedPersonForQuickReply.split("|");
+    const personCol = pType === "worker" ? workers : members;
+    const person = personCol.find((p: any) => p.id === pId);
+    
+    if (!person) {
+      addNotification("Selected recipient not found.", "error");
+      return;
+    }
+
+    const template = quickReplies.find((q: any) => q.id === selectedTemplateId);
+    if (!template) {
+      addNotification("Template not found.", "error");
+      return;
+    }
+
+    const formattedMessage = template.content.replace(/{[Nn]ame}/g, `${person.firstName} ${person.lastName}`);
+
+    setIsSendingQuickReply(true);
+    addNotification(`Sending template response to ${person.firstName}...`, "info");
+
+    try {
+      const response = await fetch("/api/whatsapp/send-custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personId: person.id,
+          personType: pType,
+          personName: `${person.firstName} ${person.lastName}`,
+          whatsAppNumber: person.whatsAppNumber,
+          messageContent: formattedMessage,
+          adminEmail: user?.email,
+          adminId: user?.id,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Meta transmission failed.");
+
+      if (data.success === false) {
+        addNotification("Meta transmitter unconfigured. Opening WhatsApp Web fallback...", "info");
+        const MathE = formattedMessage;
+        const escapedTxt = encodeURIComponent(MathE);
+        const webHref = `https://wa.me/${person.whatsAppNumber.replace(/\+/g, "")}?text=${escapedTxt}`;
+        window.open(webHref, "_blank");
+      } else {
+        addNotification("Template message dispatched successfully!", "success");
+      }
+
+      setSelectedPersonForQuickReply("");
+      setSelectedTemplateId("");
+      setQuickReplyMessagePreview("");
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(`Failed dispatch: ${err.message}`, "error");
+    } finally {
+      setIsSendingQuickReply(false);
+    }
+  };
+
+  // Manual Trigger Backup Frequency Overdue Checker
+  const handleManualCheckBackupOverdue = async () => {
+    setIsCheckingBackup(true);
+    addNotification("Running backup health check audit...", "info");
+    try {
+      const response = await fetch("/api/backup/check-manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Audit failed.");
+
+      if (data.alerted) {
+        addNotification(`Backup alert triggered successfully! Warning dispatched to active Super Admins.`, "success");
+      } else {
+        addNotification("Backup status audited: fully healthy. No overdue warning required.", "success");
+      }
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(`Audit execution failed: ${err.message}`, "error");
+    } finally {
+      setIsCheckingBackup(false);
     }
   };
 
@@ -2724,8 +2908,83 @@ export default function App() {
                     </div>
 
                     {registerSubTab === "history" ? (
-                      <div className="overflow-x-auto min-h-[350px]">
-                        <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
+                      <>
+                        {/* Mobile Cards View for Transaction History (< 768px) */}
+                        <div className="grid grid-cols-1 gap-4 p-4 md:hidden">
+                          {getFilteredHistory().length === 0 ? (
+                            <div className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed">
+                              No transaction records found matching filters.
+                            </div>
+                          ) : (
+                            getFilteredHistory().map((record) => (
+                              <div key={record.id} className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800 p-4 rounded-xl shadow-xs space-y-3 relative overflow-hidden">
+                                <div className="absolute left-0 top-0 w-1 h-full bg-blue-500" />
+                                
+                                <div className="flex justify-between items-start pl-1">
+                                  <div>
+                                    <div className="font-bold text-slate-800 dark:text-slate-100">
+                                      {record.firstName} {record.lastName}
+                                    </div>
+                                    <span className="block font-mono text-[10px] text-slate-400 mt-1">
+                                      {record.whatsAppNumber}
+                                    </span>
+                                  </div>
+                                  
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      record.personType === "worker"
+                                        ? "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-400"
+                                        : "bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"
+                                    }`}
+                                  >
+                                    {record.personType}
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3.5 text-xs pl-1 pt-1.5 border-t border-slate-50 dark:border-slate-850/65">
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Event / Service</span>
+                                    <span
+                                      className={`inline-block px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
+                                        record.eventType === "Word Cafe"
+                                          ? "bg-violet-100/50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400"
+                                          : record.eventType === "Special Program"
+                                            ? "bg-amber-100/50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                                            : "bg-blue-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                                      }`}
+                                    >
+                                      {record.eventType || "Sunday Experience"}
+                                    </span>
+                                  </div>
+                                  
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Check-in Time</span>
+                                    <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                                      {new Date(record.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex justify-between items-center text-[10px] pl-1 font-bold pt-2 text-slate-400 uppercase tracking-widest font-mono">
+                                  <span>Date: <span className="text-blue-600 dark:text-blue-400">{record.date}</span></span>
+                                  <span className={`px-1.5 py-0.5 rounded-md ${
+                                    record.gender === "Male"
+                                      ? "bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400"
+                                      : record.gender === "Female"
+                                        ? "bg-pink-50 text-pink-700 dark:bg-pink-950/30 dark:text-pink-400"
+                                        : "bg-slate-50 text-slate-600 dark:bg-slate-800"
+                                  }`}>
+                                    {record.gender || "Unspecified"}
+                                  </span>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* Desktop View Table */}
+                        <div className="hidden md:block overflow-x-auto min-h-[350px]">
+                          <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
                               <th className="py-3 px-4">Date</th>
@@ -2810,9 +3069,153 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                    </>
                     ) : (
-                      <div className="overflow-x-auto min-h-[350px]">
-                        <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
+                      <>
+                        {/* Mobile Cards View for Roster List (< 768px) */}
+                        <div className="grid grid-cols-1 gap-4 p-4 md:hidden">
+                          {getFilteredPersons(
+                            registerSubTab === "workers" ? workers : members,
+                          ).length === 0 ? (
+                            <div className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed">
+                              Roster is currently empty. Define records using the Add Person wizard.
+                            </div>
+                          ) : (
+                            getFilteredPersons(
+                              registerSubTab === "workers" ? workers : members,
+                            ).map((person) => {
+                              const isPresent = sundayFilter === "all"
+                                ? person.currentStatus === "Present"
+                                : attendanceHistory.some(rec => rec.personId === person.id && rec.date === sundayFilter);
+
+                              let recordTime = null;
+                              if (sundayFilter === "all") {
+                                recordTime = person.attendedAtTime;
+                              } else {
+                                const match = attendanceHistory.find(
+                                  (rec) => rec.personId === person.id && rec.date === sundayFilter
+                                );
+                                recordTime = match ? match.timestamp : null;
+                              }
+
+                              const formattedTime = recordTime ? new Date(recordTime).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              }) : null;
+
+                              return (
+                                <div key={person.id} className="bg-white dark:bg-slate-900 border border-slate-205/50 dark:border-slate-800 p-4 rounded-xl shadow-xs space-y-3.5 relative overflow-hidden">
+                                  {/* Left subtle marker color depending on present/absent */}
+                                  <div className={`absolute left-0 top-0 w-1 h-full ${isPresent ? "bg-emerald-500" : "bg-rose-500"}`} />
+                                  
+                                  <div className="flex justify-between items-start pl-1">
+                                    <div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedDetailsPerson(person);
+                                          setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : "member");
+                                        }}
+                                        className="font-bold text-slate-800 dark:text-slate-100 text-left hover:text-blue-600 dark:hover:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer focus:outline-none"
+                                        title="View detailed attendance history & timeline"
+                                      >
+                                        <span>{person.firstName} {person.lastName}</span>
+                                        <span className="text-[9px] font-bold text-blue-500 px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40">
+                                          profile 👤
+                                        </span>
+                                      </button>
+                                      <span className="block text-[10px] uppercase font-mono font-bold tracking-wider text-slate-400 mt-1">
+                                        {person.whatsAppNumber}
+                                      </span>
+                                    </div>
+                                    
+                                    <span
+                                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                        person.gender === "Male"
+                                          ? "bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400"
+                                          : person.gender === "Female"
+                                            ? "bg-pink-50 text-pink-700 dark:bg-pink-950/20 dark:text-pink-400"
+                                            : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                      }`}
+                                    >
+                                      {person.gender || "Unspecified"}
+                                    </span>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-3.5 text-xs pl-1 pt-1">
+                                    <div>
+                                      <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Last Attendance</span>
+                                      <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                                        {person.lastAttendanceDate || "Never"}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-slate-400 block text-[9px] uppercase font-bold tracking-wider">Check-in Time</span>
+                                      <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                                        {formattedTime || "—"}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-150 dark:border-slate-850 pt-3 pl-1">
+                                    <div className="flex items-center gap-2">
+                                      <span
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${
+                                          isPresent
+                                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
+                                            : "bg-rose-50 text-rose-700 dark:bg-rose-955/20 dark:text-rose-455"
+                                        }`}
+                                      >
+                                        <span
+                                          className={`w-1.5 h-1.5 rounded-full ${
+                                            isPresent ? "bg-emerald-500" : "bg-rose-500 animate-pulse"
+                                          }`}
+                                        />
+                                        {isPresent ? "Present" : "Absent"}
+                                      </span>
+                                      
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : "member")}
+                                        className="p-1 px-2 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer text-[10px] font-bold border border-slate-200 dark:border-slate-800 shadow-xs"
+                                        disabled={adminRole === "Pastor"}
+                                      >
+                                        Toggle 🔄
+                                      </button>
+                                    </div>
+
+                                    <div className="flex items-center gap-3">
+                                      {person.messageSent ? (
+                                        <span className={`inline-block px-2 py-0.5 rounded-md text-[9px] font-bold ${
+                                          person.messageDeliveryStatus === "Read"
+                                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/10 dark:text-emerald-400"
+                                            : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/10 dark:text-indigo-400"
+                                        }`}>
+                                          Campaign: {person.messageDeliveryStatus || "Sent"}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[9px] font-bold text-slate-400">No campaigns</span>
+                                      )}
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeletePerson(person.id, registerSubTab === "workers" ? "worker" : "member")}
+                                        className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/25 rounded-md cursor-pointer transition-colors border border-transparent hover:border-rose-100 dark:hover:border-rose-950/30"
+                                        title="Delete check records"
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        {/* Desktop View Table */}
+                        <div className="hidden md:block overflow-x-auto min-h-[350px]">
+                          <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
                               <th className="py-3 px-4">Roster Full Name</th>
@@ -3004,6 +3407,7 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                    </>
                     )}
                   </div>
                 </div>
@@ -3044,10 +3448,83 @@ export default function App() {
                         </span>
                       </div>
 
-                      <div className="overflow-x-auto min-h-[300px]">
-                        <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
-                          <thead>
-                            <tr className="bg-rose-50 dark:bg-slate-950/80 border-b border-rose-100 dark:border-rose-950 font-bold text-rose-700 dark:text-rose-450 uppercase tracking-wider text-[10px]">
+                      <>
+                        {/* Mobile Cards for Absent Members (< 768px) */}
+                        <div className="grid grid-cols-1 gap-3 p-4 md:hidden">
+                          {getFilteredPersons(members).filter((m) => m.currentStatus === "Absent").length === 0 ? (
+                            <div className="py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest italic">
+                              All members are fully registered! Excellent streak.
+                            </div>
+                          ) : (
+                            getFilteredPersons(members)
+                              .filter((m) => m.currentStatus === "Absent")
+                              .map((person) => (
+                                <div key={person.id} className="p-3 bg-rose-50/20 dark:bg-slate-955 rounded-xl border border-rose-100/50 dark:border-rose-950 space-y-2.5 relative pl-4 text-xs">
+                                  <div className="absolute left-0 top-0 h-full w-1 bg-rose-500" />
+                                  <div className="flex justify-between items-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedDetailsPerson(person);
+                                        setSelectedDetailsPersonType("member");
+                                      }}
+                                      className="font-bold text-rose-700 dark:text-rose-400 hover:underline hover:text-blue-600 dark:hover:text-blue-400 text-left transition-all"
+                                    >
+                                      {person.firstName} {person.lastName} 👤
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleWhatsAppResend({
+                                          personId: person.id,
+                                          personType: "member",
+                                          whatsAppNumber: person.whatsAppNumber,
+                                          messageContent:
+                                            "Happy Sunday and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.",
+                                        })
+                                      }
+                                      className="py-1 px-2.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-600 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer border border-rose-100 dark:border-rose-900"
+                                    >
+                                      <Send size={10} /> Send Retry
+                                    </button>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold">
+                                    <div>
+                                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">WhatsApp</span>
+                                      <span className="font-mono text-slate-700 dark:text-slate-300">{person.whatsAppNumber}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">Last Attended</span>
+                                      <span className="font-mono text-slate-700 dark:text-slate-300">{person.lastAttendanceDate || "Never"}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-between text-[10px] font-bold border-t border-rose-100/10 dark:border-rose-950/20 pt-2 text-slate-400">
+                                    <span>CAMPAIGN DELIVERY</span>
+                                    <span
+                                      className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] ${
+                                        person.messageSent
+                                          ? person.messageDeliveryStatus === "Failed"
+                                            ? "bg-rose-100/80 text-rose-750 dark:bg-rose-955/35"
+                                            : "bg-indigo-100/80 text-indigo-700 dark:bg-indigo-955/35"
+                                          : "bg-slate-100 text-slate-500"
+                                      }`}
+                                    >
+                                      {person.messageSent ? person.messageDeliveryStatus || "Sent" : "Pending"}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))
+                          )}
+                        </div>
+
+                        {/* Desktop View Table */}
+                        <div className="hidden md:block overflow-x-auto min-h-[300px]">
+                          <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
+                            <thead>
+                              <tr className="bg-rose-50 dark:bg-slate-950/80 border-b border-rose-100 dark:border-rose-950 font-bold text-rose-700 dark:text-rose-450 uppercase tracking-wider text-[10px]">
                               <th className="py-2.5 px-4 text-slate-500 uppercase tracking-wider text-[9px] font-bold">
                                 Roster Name
                               </th>
@@ -3150,6 +3627,7 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                    </>
                     </div>
 
                     {/* Absent Workers Section */}
@@ -3169,10 +3647,83 @@ export default function App() {
                         </span>
                       </div>
 
-                      <div className="overflow-x-auto min-h-[300px]">
-                        <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
-                          <thead>
-                            <tr className="bg-rose-50 dark:bg-slate-950/80 border-b border-rose-100 dark:border-rose-950 font-bold text-rose-700 dark:text-rose-450 uppercase tracking-wider text-[10px]">
+                      <>
+                        {/* Mobile Cards for Absent Workers (< 768px) */}
+                        <div className="grid grid-cols-1 gap-3 p-4 md:hidden">
+                          {getFilteredPersons(workers).filter((w) => w.currentStatus === "Absent").length === 0 ? (
+                            <div className="py-8 text-center text-xs font-bold text-slate-400 uppercase tracking-widest italic">
+                              All workers are fully active! Excellent streak.
+                            </div>
+                          ) : (
+                            getFilteredPersons(workers)
+                              .filter((w) => w.currentStatus === "Absent")
+                              .map((person) => (
+                                <div key={person.id} className="p-3 bg-rose-50/20 dark:bg-slate-955 rounded-xl border border-rose-100/50 dark:border-rose-950 space-y-2.5 relative pl-4 text-xs">
+                                  <div className="absolute left-0 top-0 h-full w-1 bg-rose-500" />
+                                  <div className="flex justify-between items-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedDetailsPerson(person);
+                                        setSelectedDetailsPersonType("worker");
+                                      }}
+                                      className="font-bold text-rose-700 dark:text-rose-400 hover:underline hover:text-blue-600 dark:hover:text-blue-400 text-left transition-all"
+                                    >
+                                      {person.firstName} {person.lastName} 👤
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleWhatsAppResend({
+                                          personId: person.id,
+                                          personType: "worker",
+                                          whatsAppNumber: person.whatsAppNumber,
+                                          messageContent:
+                                            "Happy Sunday and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.",
+                                        })
+                                      }
+                                      className="py-1 px-2.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-955/20 text-rose-600 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer border border-rose-100 dark:border-rose-900"
+                                    >
+                                      <Send size={10} /> Send Retry
+                                    </button>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold">
+                                    <div>
+                                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">WhatsApp</span>
+                                      <span className="font-mono text-slate-700 dark:text-slate-300">{person.whatsAppNumber}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">Last Attended</span>
+                                      <span className="font-mono text-slate-700 dark:text-slate-300">{person.lastAttendanceDate || "Never"}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-between text-[10px] font-bold border-t border-rose-100/10 dark:border-rose-950/20 pt-2 text-slate-400">
+                                    <span>CAMPAIGN DELIVERY</span>
+                                    <span
+                                      className={`inline-block px-1.5 py-0.5 rounded-full text-[10px] ${
+                                        person.messageSent
+                                          ? person.messageDeliveryStatus === "Failed"
+                                            ? "bg-rose-100/80 text-rose-750 dark:bg-rose-955/35"
+                                            : "bg-indigo-100/80 text-indigo-700 dark:bg-indigo-955/35"
+                                          : "bg-slate-100 text-slate-500"
+                                      }`}
+                                    >
+                                      {person.messageSent ? person.messageDeliveryStatus || "Sent" : "Pending"}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))
+                          )}
+                        </div>
+
+                        {/* Desktop View Table */}
+                        <div className="hidden md:block overflow-x-auto min-h-[300px]">
+                          <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
+                            <thead>
+                              <tr className="bg-rose-50 dark:bg-slate-950/80 border-b border-rose-100 dark:border-rose-950 font-bold text-rose-700 dark:text-rose-450 uppercase tracking-wider text-[10px]">
                               <th className="py-2.5 px-4 text-slate-500 uppercase tracking-wider text-[9px] font-bold">
                                 Roster Name
                               </th>
@@ -3274,6 +3825,7 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                    </>
                     </div>
                   </div>
                 </div>
@@ -3314,219 +3866,490 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col lg:flex-row gap-3 items-center shadow-sm no-print">
-                    {/* Search */}
-                    <div className="relative flex-1 w-full">
-                      <Search
-                        size={16}
-                        className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Search campaign logs by spelling attendee name or phone..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      />
-                    </div>
-
-                    {/* Filter by campaign type */}
-                    <div className="w-full lg:w-48">
-                      <select
-                        value={campaignTypeFilter}
-                        onChange={(e) => setCampaignTypeFilter(e.target.value)}
-                        className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
-                      >
-                        <option value="all">All Campaign Types</option>
-                        <option value="Sunday Absentee Follow-Up">Sunday Absentee Follow-Up</option>
-                        <option value="Saturday Encouragement">Saturday Encouragement</option>
-                        <option value="Wednesday Word Cafe Reminder">Wednesday Word Cafe Reminder</option>
-                      </select>
-                    </div>
-
-                    {/* Filter by date sent */}
-                    <div className="w-full lg:w-44">
-                      <select
-                        value={campaignDateFilter}
-                        onChange={(e) => setCampaignDateFilter(e.target.value)}
-                        className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
-                      >
-                        <option value="all">All Dates</option>
-                        {Array.from(new Set(whatsAppLogs.map(log => log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "")).filter(Boolean))).sort().reverse().map(dt => (
-                          <option key={dt} value={dt}>{dt}</option>
-                        ))}
-                      </select>
-                    </div>
-
+                  {/* Secondary Tab Switcher */}
+                  <div className="flex border-b border-slate-200 dark:border-slate-800 no-print">
                     <button
                       type="button"
-                      onClick={() => {
-                        const rows = getFilteredCampaignLogs().map((log) => [
-                          log.id,
-                          log.personName,
-                          log.personType,
-                          log.whatsAppNumber,
-                          log.messageType || "Adhoc",
-                          log.messageContent,
-                          log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : ""),
-                          log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString() : ""),
-                          log.deliveryStatus,
-                          log.readStatus || "Unread",
-                          log.failedStatus || ""
-                        ]);
-                        handleExportCSV(
-                          rows,
-                          [
-                            "Message ID",
-                            "Person Name",
-                            "Category",
-                            "Roster Phone",
-                            "Campaign Type",
-                            "Message Body",
-                            "Date Sent",
-                            "Time Sent",
-                            "Delivery status",
-                            "Read Status",
-                            "Failed Reason"
-                          ],
-                          `whatsapp_dispatched_logs_${Date.now()}.csv`,
-                        );
-                      }}
-                      className="py-2 px-4 bg-slate-850 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shrink-0 cursor-pointer w-full lg:w-auto"
+                      onClick={() => setCampaignSubTab("logs")}
+                      className={`py-3 px-5 text-xs sm:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+                        campaignSubTab === "logs"
+                          ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 font-black"
+                          : "border-transparent text-slate-400 hover:text-slate-200"
+                      }`}
                     >
-                      <FileSpreadsheet size={14} /> Export CSV
+                      🗣️ WhatsApp Dispatched Logs
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCampaignSubTab("templates")}
+                      className={`py-3 px-5 text-xs sm:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+                        campaignSubTab === "templates"
+                          ? "border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400 font-black"
+                          : "border-transparent text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      📚 Quick Reply Template Library
                     </button>
                   </div>
 
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-                    <div className="overflow-x-auto min-h-[350px]">
-                      <table className="w-full text-left border-collapse text-xs sm:text-sm text-slate-700 dark:text-slate-350">
-                        <thead>
-                          <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
-                            <th className="py-3 px-4">Message ID</th>
-                            <th className="py-3 px-4">Attendee Name</th>
-                            <th className="py-3 px-4">WhatsApp Phone</th>
-                            <th className="py-3 px-4">Campaign/Msg Type</th>
-                            <th className="py-3 px-4">Dispatched Message</th>
-                            <th className="py-3 px-4">Date & Time Sent</th>
-                            <th className="py-3 px-4">Delivery Status</th>
-                            <th className="py-3 px-4">Read Status</th>
-                            <th className="py-3 px-4">Failed Status</th>
-                            <th className="py-3 px-4 no-print text-right">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {getFilteredCampaignLogs().length === 0 ? (
-                            <tr>
-                              <td
-                                colSpan={10}
-                                className="py-12 text-center text-xs font-semibold text-slate-400 tracking-widest uppercase italic"
-                              >
-                                No dispatched message logs matched those filters.
-                              </td>
-                            </tr>
-                          ) : (
-                            getFilteredCampaignLogs().map((log) => {
-                              const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
-                              const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
-                              
-                              return (
-                                <tr
-                                  key={log.id}
-                                  className="border-b last:border-0 border-slate-200/30 dark:border-slate-850 hover:bg-slate-50/50"
-                                >
-                                  <td className="py-3 px-4 font-mono text-[10px] text-slate-400">
-                                    #{log.id ? log.id.slice(0, 8) : "Adhoc"}
-                                  </td>
-                                  <td className="py-3 px-4">
-                                    <div className="font-bold text-slate-850 dark:text-slate-100">
-                                      {log.personName}
-                                    </div>
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  {campaignSubTab === "logs" && (
+                    <>
+                      <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col lg:flex-row gap-3 items-center shadow-sm no-print">
+                        {/* Search */}
+                        <div className="relative flex-1 w-full">
+                          <Search
+                            size={16}
+                            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                          />
+                          <input
+                            type="text"
+                            placeholder="Search campaign logs by spelling attendee name or phone..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+
+                        {/* Filter by campaign type */}
+                        <div className="w-full lg:w-48">
+                          <select
+                            value={campaignTypeFilter}
+                            onChange={(e) => setCampaignTypeFilter(e.target.value)}
+                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            <option value="all">All Campaign Types</option>
+                            <option value="Sunday Absentee Follow-Up">Sunday Absentee Follow-Up</option>
+                            <option value="Saturday Encouragement">Saturday Encouragement</option>
+                            <option value="Wednesday Word Cafe Reminder">Wednesday Word Cafe Reminder</option>
+                          </select>
+                        </div>
+
+                        {/* Filter by date sent */}
+                        <div className="w-full lg:w-44">
+                          <select
+                            value={campaignDateFilter}
+                            onChange={(e) => setCampaignDateFilter(e.target.value)}
+                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            <option value="all">All Dates</option>
+                            {Array.from(new Set(whatsAppLogs.map(log => log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "")).filter(Boolean))).sort().reverse().map(dt => (
+                              <option key={dt} value={dt}>{dt}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rows = getFilteredCampaignLogs().map((log) => [
+                              log.id,
+                              log.personName,
+                              log.personType,
+                              log.whatsAppNumber,
+                              log.messageType || "Adhoc",
+                              log.messageContent,
+                              log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : ""),
+                              log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString() : ""),
+                              log.deliveryStatus,
+                              log.readStatus || "Unread",
+                              log.failedStatus || ""
+                            ]);
+                            handleExportCSV(
+                              rows,
+                              [
+                                "Message ID",
+                                "Person Name",
+                                "Category",
+                                "Roster Phone",
+                                "Campaign Type",
+                                "Message Body",
+                                "Date Sent",
+                                "Time Sent",
+                                "Delivery status",
+                                "Read Status",
+                                "Failed Reason"
+                              ],
+                              `whatsapp_dispatched_logs_${Date.now()}.csv`,
+                            );
+                          }}
+                          className="py-2 px-4 bg-slate-850 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shrink-0 cursor-pointer w-full lg:w-auto"
+                        >
+                          <FileSpreadsheet size={14} /> Export CSV
+                        </button>
+                      </div>
+
+                      {/* Responsive layout for message logs */}
+                      {/* Mobile Campaign logs Card View */}
+                      <div className="grid grid-cols-1 gap-4 md:hidden">
+                        {getFilteredCampaignLogs().length === 0 ? (
+                          <div className="p-12 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-855 text-center text-xs font-semibold text-slate-400 tracking-widest uppercase italic shadow-sm rounded-2xl">
+                            No dispatched message logs matched those filters.
+                          </div>
+                        ) : (
+                          getFilteredCampaignLogs().map((log) => {
+                            const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
+                            const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
+                            return (
+                              <div key={log.id} className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 rounded-xl shadow-xs space-y-3">
+                                <div className="flex justify-between items-start">
+                                  <div>
+                                    <div className="font-bold text-slate-850 dark:text-slate-100">{log.personName}</div>
+                                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-slate-150 dark:bg-slate-950/40 text-slate-450 dark:text-slate-400 rounded-md">
                                       {log.personType}
                                     </span>
-                                  </td>
-                                  <td className="py-3 px-4 font-mono text-xs">
-                                    {log.whatsAppNumber}
-                                  </td>
-                                  <td className="py-3 px-4">
-                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                      log.messageType === "Saturday Encouragement" 
-                                        ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
-                                        : log.messageType === "Wednesday Word Cafe Reminder"
-                                          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
-                                          : log.messageType === "Sunday Absentee Follow-Up"
-                                            ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
-                                            : "bg-slate-100 text-slate-700 dark:bg-slate-950/20 dark:text-slate-400"
+                                  </div>
+                                  <span className="font-mono text-[9px] text-slate-440">#{log.id ? log.id.slice(0, 8) : "Adhoc"}</span>
+                                </div>
+                                <div className="text-xs space-y-1 bg-slate-50 dark:bg-slate-950 p-2.5 rounded-lg border border-slate-100 dark:border-slate-850/60 font-medium">
+                                  <div className="text-[10px] uppercase font-bold text-slate-400">Dispatched Message:</div>
+                                  <p className="text-slate-700 dark:text-slate-300 break-words leading-relaxed">{log.messageContent}</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 text-[11px] pt-1">
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Roster Phone</span>
+                                    <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{log.whatsAppNumber}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Campaign Type</span>
+                                    <span className="font-bold text-slate-600 dark:text-slate-450">{log.messageType || "Adhoc Direct"}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Date Dispatch</span>
+                                    <span className="font-mono font-bold text-slate-600 dark:text-slate-400">{dsStr} at {tsStr}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Delivery/Read</span>
+                                    <span className={`inline-flex items-center gap-1 font-bold ${
+                                      log.deliveryStatus === "Read"
+                                        ? "text-emerald-500"
+                                        : log.deliveryStatus === "Delivered"
+                                          ? "text-cyan-500"
+                                          : log.deliveryStatus === "Failed"
+                                            ? "text-rose-500 animate-pulse"
+                                            : "text-indigo-500"
                                     }`}>
-                                      {log.messageType || "Adhoc Direct"}
+                                      {log.deliveryStatus} ({log.readStatus === "Read" || log.deliveryStatus === "Read" ? "Read ✓✓" : "Sent"})
                                     </span>
-                                  </td>
-                                  <td
-                                    className="py-3 px-4 max-w-xs truncate text-[11px] leading-relaxed"
-                                    title={log.messageContent}
+                                  </div>
+                                </div>
+                                <div className="pt-2 border-t border-slate-100 dark:border-slate-850 flex justify-end no-print">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleWhatsAppResend(log)}
+                                    className="px-3 py-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
                                   >
-                                    {log.messageContent}
-                                  </td>
-                                  <td className="py-3 px-4 text-xs">
-                                    <div className="font-bold text-slate-700 dark:text-slate-300">{dsStr}</div>
-                                    <div className="text-[10px] font-mono text-slate-400">{tsStr}</div>
-                                  </td>
-                                  <td className="py-3 px-4">
-                                    <span
-                                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold leading-none ${
-                                        log.deliveryStatus === "Read"
-                                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
-                                          : log.deliveryStatus === "Delivered"
-                                            ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20 dark:text-cyan-400"
-                                            : log.deliveryStatus === "Failed"
-                                              ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 animate-pulse"
-                                              : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
-                                      }`}
-                                    >
-                                      <span
-                                        className={`w-1.5 h-1.5 rounded-full ${
-                                          log.deliveryStatus === "Read"
-                                            ? "bg-emerald-500"
-                                            : log.deliveryStatus === "Delivered"
-                                              ? "bg-cyan-400"
-                                              : log.deliveryStatus === "Failed"
-                                                ? "bg-rose-500"
-                                                : "bg-indigo-500"
-                                        }`}
-                                      />
-                                      {log.deliveryStatus}
-                                    </span>
-                                  </td>
-                                  <td className="py-3 px-4">
-                                    <span className={`text-xs font-bold uppercase tracking-wider ${
-                                      log.readStatus === "Read" || log.deliveryStatus === "Read"
-                                        ? "text-emerald-600 dark:text-emerald-400"
-                                        : "text-slate-400"
-                                    }`}>
-                                      {log.readStatus === "Read" || log.deliveryStatus === "Read" ? "Read ✓✓" : "Unread"}
-                                    </span>
-                                  </td>
-                                  <td className="py-3 px-4 max-w-[120px] truncate text-[10px] text-slate-400 italic" title={log.failedStatus || ""}>
-                                    {log.failedStatus || <span className="text-slate-350 dark:text-slate-600">—</span>}
-                                  </td>
-                                  <td className="py-3 px-4 no-print text-right">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleWhatsAppResend(log)}
-                                      className="p-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
-                                    >
-                                      <Send size={11} /> Resend
-                                    </button>
+                                    <Send size={11} /> Resend
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Desktop View Table */}
+                      <div className="hidden md:block bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+                        <div className="overflow-x-auto min-h-[350px]">
+                          <table className="w-full text-left border-collapse text-xs sm:text-sm text-slate-700 dark:text-slate-350">
+                            <thead>
+                              <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
+                                <th className="py-3 px-4">Message ID</th>
+                                <th className="py-3 px-4">Attendee Name</th>
+                                <th className="py-3 px-4">WhatsApp Phone</th>
+                                <th className="py-3 px-4">Campaign/Msg Type</th>
+                                <th className="py-3 px-4">Dispatched Message</th>
+                                <th className="py-3 px-4">Date & Time Sent</th>
+                                <th className="py-3 px-4">Delivery Status</th>
+                                <th className="py-3 px-4">Read Status</th>
+                                <th className="py-3 px-4">Failed Status</th>
+                                <th className="py-3 px-4 no-print text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {getFilteredCampaignLogs().length === 0 ? (
+                                <tr>
+                                  <td
+                                    colSpan={10}
+                                    className="py-12 text-center text-xs font-semibold text-slate-400 tracking-widest uppercase italic"
+                                  >
+                                    No dispatched message logs matched those filters.
                                   </td>
                                 </tr>
-                              );
-                            })
+                              ) : (
+                                getFilteredCampaignLogs().map((log) => {
+                                  const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
+                                  const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
+                                  
+                                  return (
+                                    <tr
+                                      key={log.id}
+                                      className="border-b last:border-0 border-slate-200/30 dark:border-slate-850 hover:bg-slate-50/50"
+                                    >
+                                      <td className="py-3 px-4 font-mono text-[10px] text-slate-400">
+                                        #{log.id ? log.id.slice(0, 8) : "Adhoc"}
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <div className="font-bold text-slate-850 dark:text-slate-100">
+                                          {log.personName}
+                                        </div>
+                                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                          {log.personType}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 font-mono text-xs">
+                                        {log.whatsAppNumber}
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                          log.messageType === "Saturday Encouragement" 
+                                            ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
+                                            : log.messageType === "Wednesday Word Cafe Reminder"
+                                              ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
+                                              : log.messageType === "Sunday Absentee Follow-Up"
+                                                ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
+                                                : "bg-slate-100 text-slate-700 dark:bg-slate-950/20 dark:text-slate-400"
+                                        }`}>
+                                          {log.messageType || "Adhoc Direct"}
+                                        </span>
+                                      </td>
+                                      <td
+                                        className="py-3 px-4 max-w-xs truncate text-[11px] leading-relaxed"
+                                        title={log.messageContent}
+                                      >
+                                        {log.messageContent}
+                                      </td>
+                                      <td className="py-3 px-4 text-xs">
+                                        <div className="font-bold text-slate-700 dark:text-slate-300">{dsStr}</div>
+                                        <div className="text-[10px] font-mono text-slate-400">{tsStr}</div>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span
+                                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold leading-none ${
+                                            log.deliveryStatus === "Read"
+                                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
+                                              : log.deliveryStatus === "Delivered"
+                                                ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20 dark:text-cyan-400"
+                                                : log.deliveryStatus === "Failed"
+                                                  ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 animate-pulse"
+                                                  : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
+                                          }`}
+                                        >
+                                          <span
+                                            className={`w-1.5 h-1.5 rounded-full ${
+                                              log.deliveryStatus === "Read"
+                                                ? "bg-emerald-500"
+                                                : log.deliveryStatus === "Delivered"
+                                                  ? "bg-cyan-400"
+                                                  : log.deliveryStatus === "Failed"
+                                                    ? "bg-rose-500"
+                                                    : "bg-indigo-500"
+                                            }`}
+                                          />
+                                          {log.deliveryStatus}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4">
+                                        <span className={`text-xs font-bold uppercase tracking-wider ${
+                                          log.readStatus === "Read" || log.deliveryStatus === "Read"
+                                            ? "text-emerald-600 dark:text-emerald-400"
+                                            : "text-slate-400"
+                                        }`}>
+                                          {log.readStatus === "Read" || log.deliveryStatus === "Read" ? "Read ✓✓" : "Unread"}
+                                        </span>
+                                      </td>
+                                      <td className="py-3 px-4 max-w-[120px] truncate text-[10px] text-slate-400 italic" title={log.failedStatus || ""}>
+                                        {log.failedStatus || <span className="text-slate-350 dark:text-slate-600">—</span>}
+                                      </td>
+                                      <td className="py-3 px-4 no-print text-right">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleWhatsAppResend(log)}
+                                          className="p-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
+                                        >
+                                          <Send size={11} /> Resend
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {campaignSubTab === "templates" && (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in">
+                      {/* Left Side: Sender / Dispatcher */}
+                      <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 rounded-2xl shadow-sm space-y-4">
+                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-widest pl-1">
+                          ⚡ Instant Dispatcher
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Select any registered person, select an inquiry templates pre-set, and send an instant pre-formatted WhatsApp response.
+                        </p>
+
+                        <div className="space-y-4">
+                          {/* 1. Recipient Selector */}
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-450 uppercase tracking-wider mb-1">Select Recipient</label>
+                            <select
+                              value={selectedPersonForQuickReply}
+                              onChange={(e) => {
+                                setSelectedPersonForQuickReply(e.target.value);
+                                // Update preview if template already selected
+                                if (selectedTemplateId && e.target.value) {
+                                  const [pId, pType] = e.target.value.split("|");
+                                  const pCol = pType === "worker" ? workers : members;
+                                  const matchPerson = pCol.find((p: any) => p.id === pId);
+                                  const selectTemplate = quickReplies.find((q: any) => q.id === selectedTemplateId);
+                                  if (matchPerson && selectTemplate) {
+                                    setQuickReplyMessagePreview(
+                                      selectTemplate.content.replace(/{[Nn]ame}/g, `${matchPerson.firstName} ${matchPerson.lastName}`)
+                                    );
+                                  }
+                                }
+                              }}
+                              className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            >
+                              <option value="">-- Choose Member or Worker --</option>
+                              <optgroup label="Members">
+                                {members.map((m: any) => (
+                                  <option key={`m-${m.id}`} value={`${m.id}|member`}>
+                                    👤 {m.firstName} {m.lastName} ({m.whatsAppNumber})
+                                  </option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="Workers">
+                                {workers.map((w: any) => (
+                                  <option key={`w-${w.id}`} value={`${w.id}|worker`}>
+                                    🛠️ {w.firstName} {w.lastName} ({w.whatsAppNumber})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            </select>
+                          </div>
+
+                          {/* 2. Template Selector */}
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-450 uppercase tracking-wider mb-1">Select Message Template</label>
+                            <div className="grid grid-cols-1 gap-2 max-h-[160px] overflow-y-auto pr-1">
+                              {quickReplies.map((qr: any) => (
+                                <button
+                                  type="button"
+                                  key={qr.id}
+                                  onClick={() => {
+                                    setSelectedTemplateId(qr.id);
+                                    if (selectedPersonForQuickReply) {
+                                      const [pId, pType] = selectedPersonForQuickReply.split("|");
+                                      const pCol = pType === "worker" ? workers : members;
+                                      const matchPerson = pCol.find((p: any) => p.id === pId);
+                                      if (matchPerson) {
+                                        setQuickReplyMessagePreview(
+                                          qr.content.replace(/{[Nn]ame}/g, `${matchPerson.firstName} ${matchPerson.lastName}`)
+                                        );
+                                        return;
+                                      }
+                                    }
+                                    setQuickReplyMessagePreview(qr.content);
+                                  }}
+                                  className={`p-2.5 rounded-xl border text-left text-xs transition-all flex items-center justify-between cursor-pointer ${
+                                    selectedTemplateId === qr.id
+                                      ? "bg-indigo-50 dark:bg-indigo-950/20 border-indigo-500 text-indigo-700 dark:text-indigo-400 font-bold"
+                                      : "bg-slate-50 dark:bg-slate-950 border-slate-100 dark:border-slate-850 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                  }`}
+                                >
+                                  <span>{qr.title}</span>
+                                  {selectedTemplateId === qr.id && <span className="text-[10px] text-indigo-600 dark:text-indigo-400">Active ✓</span>}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* 3. Personalized Message Live Preview */}
+                          {quickReplyMessagePreview && (
+                            <div className="p-3 bg-indigo-50/40 dark:bg-slate-950 rounded-xl border border-indigo-100/40 dark:border-slate-850/60 text-xs">
+                              <span className="block text-[9px] uppercase font-bold text-slate-400 mb-1">Live Personalized Mobile Preview</span>
+                              <p className="text-slate-700 dark:text-slate-300 italic font-medium leading-relaxed font-sans">{quickReplyMessagePreview}</p>
+                            </div>
                           )}
-                        </tbody>
-                      </table>
+
+                          {/* 4. Action Dispatch Button */}
+                          <button
+                            type="button"
+                            onClick={handleSendQuickReply}
+                            disabled={isSendingQuickReply || !selectedPersonForQuickReply || !selectedTemplateId}
+                            className="w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 font-bold hover:opacity-90 disabled:opacity-50 text-white rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow transition-all duration-150"
+                          >
+                            <span>{isSendingQuickReply ? "Dispatched Transmission..." : "⚡ Transmit Quick Reply"}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Right Side: Template Management & Library */}
+                      <div className="lg:col-span-7 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-widest pl-1">
+                            📚 Template Library ({quickReplies.length})
+                          </h3>
+                          {adminRole !== "Pastor" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuickReplyForm({ id: "", title: "", content: "" });
+                                setShowAddQuickReplyModal(true);
+                              }}
+                              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer shadow transition-colors"
+                            >
+                              Add Template ＋
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[450px] overflow-y-auto pr-1">
+                          {quickReplies.map((qr: any) => (
+                            <div key={qr.id} className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 rounded-xl shadow-xs hover:shadow-sm transition-all duration-150 flex flex-col justify-between space-y-3 relative group">
+                              <div>
+                                <h4 className="text-xs font-black text-slate-850 dark:text-slate-105 flex items-center justify-between m-0">
+                                  <span>{qr.title}</span>
+                                  {qr.id.startsWith("qr_") && !["qr_welcome", "qr_timings", "qr_prayer", "qr_tithing", "qr_absentee"].includes(qr.id) && (
+                                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest bg-slate-50 dark:bg-slate-950 px-1.5 py-0.5 rounded border border-slate-100 dark:border-slate-850">Custom</span>
+                                  )}
+                                </h4>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-sans mt-2">{qr.content}</p>
+                              </div>
+
+                              <div className="pt-2 border-t border-slate-50 dark:border-slate-850 flex items-center justify-end gap-2 text-[10px]">
+                                {adminRole !== "Pastor" && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setQuickReplyForm({ id: qr.id, title: qr.title, content: qr.content });
+                                        setShowAddQuickReplyModal(true);
+                                      }}
+                                      className="py-1 px-2.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 rounded font-bold cursor-pointer"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteQuickReply(qr.id, qr.title)}
+                                      className="py-1 px-2.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded font-bold cursor-pointer"
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
 
