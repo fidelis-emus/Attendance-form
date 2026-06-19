@@ -465,6 +465,8 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/subscription/info", async (req, res) => {
   try {
     const db = await getDb();
+    const adminId = req.query.adminId || req.headers["x-admin-id"];
+
     let sub = await db.collection("settings").findOne({ id: "subscription_status" });
     if (!sub) {
       const act = new Date();
@@ -480,12 +482,20 @@ app.get("/api/subscription/info", async (req, res) => {
       await db.collection("settings").insertOne(sub);
     }
 
+    let isSuperAdmin = false;
+    if (adminId) {
+      const admin = await db.collection("admins").findOne({ id: adminId as string });
+      if (admin && admin.role === "Super Admin") {
+        isSuperAdmin = true;
+      }
+    }
+
     const expiryTime = new Date(sub.expiryDate).getTime();
     res.json({
       planType: sub.planType,
       activationDate: sub.activationDate,
       expiryDate: sub.expiryDate,
-      licenseKey: sub.licenseKey,
+      licenseKey: isSuperAdmin ? sub.licenseKey : "••••-••••-••••-••••",
       isExpired: expiryTime < Date.now()
     });
   } catch (err: any) {
@@ -1340,7 +1350,7 @@ app.get("/api/admins", requireSubscription, async (req, res) => {
 // Create Admin role mapping
 app.post("/api/admins", requireSubscription, async (req, res) => {
   try {
-    const { id, email, role, adminEmail, adminId } = req.body;
+    const { id, email, role, password, adminEmail, adminId } = req.body;
     if (!email || !role) {
       return res.status(400).json({ error: "Missing parameters: email and role are required." });
     }
@@ -1357,15 +1367,27 @@ app.post("/api/admins", requireSubscription, async (req, res) => {
         adminUniqueId = generateId();
       }
     }
+
+    const updatePayload: any = {
+      id: adminUniqueId,
+      email: emailLower,
+      role,
+    };
+
+    if (password) {
+      updatePayload.password = password;
+    } else {
+      // Check existing admin document's password
+      const existingAdmin = await db.collection("admins").findOne({ id: adminUniqueId });
+      if (!existingAdmin || !existingAdmin.password) {
+        updatePayload.password = "admin123"; // Default fallback
+      }
+    }
     
     await db.collection("admins").updateOne(
       { id: adminUniqueId },
       {
-        $set: {
-          id: adminUniqueId,
-          email: emailLower,
-          role,
-        }
+        $set: updatePayload
       },
       { upsert: true }
     );

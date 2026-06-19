@@ -183,6 +183,7 @@ export default function App() {
     id: "",
     email: "",
     role: "Secretary" as "Super Admin" | "Pastor" | "Secretary",
+    password: "",
   });
 
   // System Scheduler States
@@ -332,7 +333,8 @@ export default function App() {
 
   const fetchSubscriptionInfo = async () => {
     try {
-      const res = await fetch("/api/subscription/info");
+      const adminId = user?.uid || "";
+      const res = await fetch(`/api/subscription/info?adminId=${adminId}`);
       if (res.ok) {
         const data = await res.json();
         setSubInfo(data);
@@ -1074,6 +1076,7 @@ export default function App() {
           id: newAdmin.id || "",
           email: newAdmin.email.trim().toLowerCase(),
           role: newAdmin.role,
+          password: newAdmin.password || "",
           adminEmail: user?.email,
           adminId: user?.uid,
         }),
@@ -1086,7 +1089,7 @@ export default function App() {
 
       addNotification("Admin role mapped successfully!", "success");
       setShowAddAdminModal(false);
-      setNewAdmin({ id: "", email: "", role: "Secretary" });
+      setNewAdmin({ id: "", email: "", role: "Secretary", password: "" });
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
@@ -3961,12 +3964,14 @@ export default function App() {
                             {subInfo?.expiryDate ? new Date(subInfo.expiryDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "N/A"}
                           </span>
                         </div>
-                        <div className="flex flex-col pt-2 border-t border-slate-150 dark:border-slate-850/50">
-                          <span className="text-[10px] text-slate-400 uppercase tracking-wider">Cryptographic License Key:</span>
-                          <span className="font-mono text-[10px] bg-white dark:bg-slate-900 p-2 rounded mt-1 text-indigo-600 dark:text-indigo-400 break-all select-all border border-slate-100 dark:border-slate-850">
-                            {subInfo?.licenseKey || "CHM-ACTIVE-MONTHLY-882"}
-                          </span>
-                        </div>
+                        {adminRole === "Super Admin" && (
+                          <div className="flex flex-col pt-2 border-t border-slate-150 dark:border-slate-850/50">
+                            <span className="text-[10px] text-slate-400 uppercase tracking-wider">Cryptographic License Key:</span>
+                            <span className="font-mono text-[10px] bg-white dark:bg-slate-900 p-2 rounded mt-1 text-indigo-600 dark:text-indigo-400 break-all select-all border border-slate-100 dark:border-slate-850">
+                              {subInfo?.licenseKey || "CHM-ACTIVE-MONTHLY-882"}
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {adminRole === "Super Admin" && (

@@ -79,6 +79,7 @@ export interface Admin {
   id: string; // Auth UID
   email: string;
   role: "Super Admin" | "Pastor" | "Secretary";
+  password?: string;
 }
 
 export interface AuditLog {
