@@ -1710,9 +1710,10 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
   const db = await getDb();
   const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
 
+  // Compare today's Sunday Experience attendance with previous Sunday's Sunday Experience attendance
   const [prevAtt, todayAtt] = await Promise.all([
-    db.collection("attendance").find({ date: prevSun }, { projection: { _id: 0 } }).toArray(),
-    db.collection("attendance").find({ date: todaySun }, { projection: { _id: 0 } }).toArray(),
+    db.collection("attendance").find({ date: prevSun, eventType: "Sunday Experience" }, { projection: { _id: 0 } }).toArray(),
+    db.collection("attendance").find({ date: todaySun, eventType: "Sunday Experience" }, { projection: { _id: 0 } }).toArray(),
   ]);
 
   const presentTodayIds = new Set<string>();
@@ -1754,6 +1755,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     const personCol = person.personType === "worker" ? "workers" : "members";
     let deliveryStatus: "Sent" | "Failed" = "Sent";
     let wamid = null;
+    let errMessage = "";
 
     const rawTemplate = person.personType === "worker" ? workerTemplate : memberTemplate;
     const messageText = rawTemplate
@@ -1771,8 +1773,13 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     } catch (err: any) {
       console.error(`Failed to send automated follow up to ${person.whatsAppNumber}:`, err.message);
       deliveryStatus = "Failed";
+      errMessage = err.message;
       failedCount++;
     }
+
+    const now = new Date();
+    const dateSentStr = now.toISOString().split("T")[0];
+    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
 
     await db.collection("whatsapp_logs").insertOne({
       id: generateId(),
@@ -1781,8 +1788,14 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       personType: person.personType,
       whatsAppNumber: person.whatsAppNumber,
       messageContent: messageText,
-      sentAt: new Date().toISOString(),
+      sentAt: now.toISOString(),
+      dateSent: dateSentStr,
+      timeSent: timeSentStr,
       deliveryStatus,
+      readStatus: "Unread",
+      messageStatus: deliveryStatus,
+      messageType: "Sunday Absentee Follow-Up",
+      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
       wamid,
     });
 
@@ -1793,7 +1806,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
           currentStatus: "Absent",
           attendedAtTime: null,
           messageSent: true,
-          messageSentDate: new Date().toISOString(),
+          messageSentDate: now.toISOString(),
           messageDeliveryStatus: deliveryStatus,
         }
       }
@@ -1803,7 +1816,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       name: `${person.firstName} ${person.lastName}`,
       status: deliveryStatus,
       phone: person.whatsAppNumber,
-      error: deliveryStatus === "Failed" ? "Meta API config missing or transmission failed." : null,
+      error: deliveryStatus === "Failed" ? (errMessage || "Meta API config missing or transmission failed.") : null,
     });
   }
 
@@ -1820,6 +1833,232 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     if (!presentTodayIds.has(w.id) && w.lastAttendanceDate !== todaySun) {
       await db.collection("workers").updateOne({ id: w.id }, { $set: { currentStatus: "Absent", attendedAtTime: null } });
     }
+  }
+
+  return { processedCount, failedCount, logs: executionLogs };
+}
+
+// Core Saturday Encouragement Runner Function
+async function executeSaturdayEncouragement(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
+  console.log("Triggering Saturday 6:00 PM Encouragement transmission...");
+  
+  const db = await getDb();
+  const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
+
+  const [allMembers, allWorkers] = await Promise.all([
+    db.collection("members").find({}, { projection: { _id: 0 } }).toArray(),
+    db.collection("workers").find({}, { projection: { _id: 0 } }).toArray(),
+  ]);
+
+  const targetList: Array<{
+    id: string;
+    personType: "member" | "worker";
+    firstName: string;
+    lastName: string;
+    whatsAppNumber: string;
+  }> = [];
+
+  allMembers.forEach((m: any) => {
+    targetList.push({
+      id: m.id,
+      personType: "member",
+      firstName: m.firstName,
+      lastName: m.lastName,
+      whatsAppNumber: m.whatsAppNumber,
+    });
+  });
+
+  allWorkers.forEach((w: any) => {
+    targetList.push({
+      id: w.id,
+      personType: "worker",
+      firstName: w.firstName,
+      lastName: w.lastName,
+      whatsAppNumber: w.whatsAppNumber,
+    });
+  });
+
+  const msgBody = "Happy Weekend from House of Glory. We are excited to worship with you tomorrow at Sunday Experience. Come expectant and invite someone. We look forward to seeing you in God's presence. God bless you.";
+
+  let processedCount = 0;
+  let failedCount = 0;
+  const executionLogs: any[] = [];
+
+  for (const person of targetList) {
+    if (!person.whatsAppNumber) continue;
+    
+    const personCol = person.personType === "worker" ? "workers" : "members";
+    let deliveryStatus: "Sent" | "Failed" = "Sent";
+    let wamid = null;
+    let errMessage = "";
+
+    try {
+      if (config && config.phoneNumberId && config.accessToken) {
+        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, msgBody);
+        wamid = result.messages?.[0]?.id || null;
+        processedCount++;
+      } else {
+        throw new Error("Meta credentials are not configured in system settings.");
+      }
+    } catch (err: any) {
+      console.error(`Failed to send automated Saturday Encouragement to ${person.whatsAppNumber}:`, err.message);
+      deliveryStatus = "Failed";
+      errMessage = err.message;
+      failedCount++;
+    }
+
+    const now = new Date();
+    const dateSentStr = now.toISOString().split("T")[0];
+    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+    await db.collection("whatsapp_logs").insertOne({
+      id: generateId(),
+      personId: person.id,
+      personName: `${person.firstName} ${person.lastName}`,
+      personType: person.personType,
+      whatsAppNumber: person.whatsAppNumber,
+      messageContent: msgBody,
+      sentAt: now.toISOString(),
+      dateSent: dateSentStr,
+      timeSent: timeSentStr,
+      deliveryStatus,
+      readStatus: "Unread",
+      messageStatus: deliveryStatus,
+      messageType: "Saturday Encouragement",
+      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
+      wamid,
+    });
+
+    await db.collection(personCol).updateOne(
+      { id: person.id },
+      {
+        $set: {
+          messageSent: true,
+          messageSentDate: now.toISOString(),
+          messageDeliveryStatus: deliveryStatus,
+        }
+      }
+    );
+
+    executionLogs.push({
+      name: `${person.firstName} ${person.lastName}`,
+      status: deliveryStatus,
+      phone: person.whatsAppNumber,
+      error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
+    });
+  }
+
+  return { processedCount, failedCount, logs: executionLogs };
+}
+
+// Core Wednesday Reminder Runner Function
+async function executeWednesdayReminders(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
+  console.log("Triggering Wednesday 10:00 AM Word Cafe transmission...");
+  
+  const db = await getDb();
+  const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
+
+  const [allMembers, allWorkers] = await Promise.all([
+    db.collection("members").find({}, { projection: { _id: 0 } }).toArray(),
+    db.collection("workers").find({}, { projection: { _id: 0 } }).toArray(),
+  ]);
+
+  const targetList: Array<{
+    id: string;
+    personType: "member" | "worker";
+    firstName: string;
+    lastName: string;
+    whatsAppNumber: string;
+  }> = [];
+
+  allMembers.forEach((m: any) => {
+    targetList.push({
+      id: m.id,
+      personType: "member",
+      firstName: m.firstName,
+      lastName: m.lastName,
+      whatsAppNumber: m.whatsAppNumber,
+    });
+  });
+
+  allWorkers.forEach((w: any) => {
+    targetList.push({
+      id: w.id,
+      personType: "worker",
+      firstName: w.firstName,
+      lastName: w.lastName,
+      whatsAppNumber: w.whatsAppNumber,
+    });
+  });
+
+  const msgBody = "Good morning and God bless you. Join us today for Word Cafe (Bible Study) as we study God's Word together and grow in faith. We look forward to seeing you. God bless you.";
+
+  let processedCount = 0;
+  let failedCount = 0;
+  const executionLogs: any[] = [];
+
+  for (const person of targetList) {
+    if (!person.whatsAppNumber) continue;
+
+    const personCol = person.personType === "worker" ? "workers" : "members";
+    let deliveryStatus: "Sent" | "Failed" = "Sent";
+    let wamid = null;
+    let errMessage = "";
+
+    try {
+      if (config && config.phoneNumberId && config.accessToken) {
+        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, msgBody);
+        wamid = result.messages?.[0]?.id || null;
+        processedCount++;
+      } else {
+        throw new Error("Meta credentials are not configured in system settings.");
+      }
+    } catch (err: any) {
+      console.error(`Failed to send automated Wednesday reminder to ${person.whatsAppNumber}:`, err.message);
+      deliveryStatus = "Failed";
+      errMessage = err.message;
+      failedCount++;
+    }
+
+    const now = new Date();
+    const dateSentStr = now.toISOString().split("T")[0];
+    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+    await db.collection("whatsapp_logs").insertOne({
+      id: generateId(),
+      personId: person.id,
+      personName: `${person.firstName} ${person.lastName}`,
+      personType: person.personType,
+      whatsAppNumber: person.whatsAppNumber,
+      messageContent: msgBody,
+      sentAt: now.toISOString(),
+      dateSent: dateSentStr,
+      timeSent: timeSentStr,
+      deliveryStatus,
+      readStatus: "Unread",
+      messageStatus: deliveryStatus,
+      messageType: "Wednesday Word Cafe Reminder",
+      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
+      wamid,
+    });
+
+    await db.collection(personCol).updateOne(
+      { id: person.id },
+      {
+        $set: {
+          messageSent: true,
+          messageSentDate: now.toISOString(),
+          messageDeliveryStatus: deliveryStatus,
+        }
+      }
+    );
+
+    executionLogs.push({
+      name: `${person.firstName} ${person.lastName}`,
+      status: deliveryStatus,
+      phone: person.whatsAppNumber,
+      error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
+    });
   }
 
   return { processedCount, failedCount, logs: executionLogs };
@@ -1846,6 +2085,56 @@ app.post("/api/whatsapp/trigger-sunday-followup", requireSubscription, async (re
     });
   } catch (err: any) {
     console.error("Manual trigger exception:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dynamic trigger to instantly test Saturday encouragement
+app.post("/api/whatsapp/trigger-saturday", requireSubscription, async (req, res) => {
+  try {
+    const { adminEmail, adminId } = req.body;
+    const result = await executeSaturdayEncouragement();
+
+    await addAuditLog(
+      adminId || "system",
+      adminEmail || "admin@church.org",
+      `Explicitly triggered automated Saturday encouragement campaign. Sent: ${result.processedCount}, Failed: ${result.failedCount}`
+    );
+
+    res.json({
+      success: true,
+      processedCount: result.processedCount,
+      failedCount: result.failedCount,
+      logs: result.logs,
+      message: "Saturday encouragement campaign check complete."
+    });
+  } catch (err: any) {
+    console.error("Manual Saturday trigger exception:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dynamic trigger to instantly test Wednesday reminders
+app.post("/api/whatsapp/trigger-wednesday", requireSubscription, async (req, res) => {
+  try {
+    const { adminEmail, adminId } = req.body;
+    const result = await executeWednesdayReminders();
+
+    await addAuditLog(
+      adminId || "system",
+      adminEmail || "admin@church.org",
+      `Explicitly triggered automated Wednesday Word Cafe reminders. Sent: ${result.processedCount}, Failed: ${result.failedCount}`
+    );
+
+    res.json({
+      success: true,
+      processedCount: result.processedCount,
+      failedCount: result.failedCount,
+      logs: result.logs,
+      message: "Wednesday Word Cafe reminder campaign check complete."
+    });
+  } catch (err: any) {
+    console.error("Manual Wednesday trigger exception:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2269,13 +2558,36 @@ app.post("/api/email/trigger-weekly-report", requireSubscription, async (req, re
 });
 
 // ==========================================
-// SCHEDULER (Cron Job)
+// SCHEDULER (Cron Jobs)
 // ==========================================
 
-// At exactly 6 PM every Sunday (0 18 * * 0)
+// Wednesday at exactly 10:00 AM (0 10 * * 3)
+cron.schedule("0 10 * * 3", async () => {
+  try {
+    console.log("[Automated Scheduler] Triggering Wednesday 10:00 AM Word Cafe Reminders...");
+    const result = await executeWednesdayReminders();
+    console.log(`Automated Wednesday Reminders completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+  } catch (err) {
+    console.error("Wednesday reminder CRON scheduler failed:", err);
+  }
+});
+
+// Saturday at exactly 6:00 PM (0 18 * * 6)
+cron.schedule("0 18 * * 6", async () => {
+  try {
+    console.log("[Automated Scheduler] Triggering Saturday 6:00 PM Encouragement transmission...");
+    const result = await executeSaturdayEncouragement();
+    console.log(`Automated Saturday Encouragement completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+  } catch (err) {
+    console.error("Saturday encouragement CRON scheduler failed:", err);
+  }
+});
+
+// Sunday at exactly 6:00 PM (0 18 * * 0)
 cron.schedule("0 18 * * 0", async () => {
   try {
     const todaySun = getSundayOfDate(new Date());
+    console.log("[Automated Scheduler] Triggering Sunday 6:00 PM Attendee comparison and follow-ups...");
     // Run WhatsApp follow-ups
     const result = await executeSundayFollowups();
     console.log(`Automated Sunday 6:00 PM CRON completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);

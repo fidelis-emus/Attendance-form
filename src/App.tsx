@@ -147,6 +147,8 @@ export default function App() {
   const [sundayFilter, setSundayFilter] = useState("all");
   const [historyProgramFilter, setHistoryProgramFilter] = useState("all");
   const [historyYearFilter, setHistoryYearFilter] = useState("all");
+  const [campaignTypeFilter, setCampaignTypeFilter] = useState("all");
+  const [campaignDateFilter, setCampaignDateFilter] = useState("all");
 
   // Detailed Modal states
   const [selectedDetailsPerson, setSelectedDetailsPerson] = useState<
@@ -971,6 +973,84 @@ export default function App() {
     }
   };
 
+  // Explicitly trigger Saturday Encouragement campaign
+  const handleTriggerSaturdayCampaign = async () => {
+    if (
+      !window.confirm(
+        "Do you want to instantly trigger the Saturday Encouragement campaign and send messages to all members and workers?",
+      )
+    )
+      return;
+
+    setRunningScheduler(true);
+    setSchedulerLogs([]);
+    setShowSchedulerResult(true);
+
+    try {
+      const response = await fetch("/api/whatsapp/trigger-saturday", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Triggering Saturday campaign failed.");
+
+      setSchedulerLogs(data.logs || []);
+      addNotification(
+        `Saturday Encouragement run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
+        "success",
+      );
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    } finally {
+      setRunningScheduler(false);
+    }
+  };
+
+  // Explicitly trigger Wednesday Bible Study reminders
+  const handleTriggerWednesdayCampaign = async () => {
+    if (
+      !window.confirm(
+        "Do you want to instantly trigger the Wednesday Word Cafe Reminder campaign?",
+      )
+    )
+      return;
+
+    setRunningScheduler(true);
+    setSchedulerLogs([]);
+    setShowSchedulerResult(true);
+
+    try {
+      const response = await fetch("/api/whatsapp/trigger-wednesday", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Triggering Wednesday campaign failed.");
+
+      setSchedulerLogs(data.logs || []);
+      addNotification(
+        `Wednesday Reminders run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
+        "success",
+      );
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    } finally {
+      setRunningScheduler(false);
+    }
+  };
+
   // Add system administrator role
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1417,7 +1497,19 @@ export default function App() {
         .toLowerCase()
         .includes(searchQuery.toLowerCase());
       const phoneMatched = log.whatsAppNumber.includes(searchQuery);
-      return nameMatched || phoneMatched;
+      
+      let matchesType = true;
+      if (campaignTypeFilter !== "all") {
+        matchesType = log.messageType === campaignTypeFilter;
+      }
+      
+      let matchesDate = true;
+      if (campaignDateFilter !== "all") {
+        const logDateStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "");
+        matchesDate = logDateStr === campaignDateFilter;
+      }
+
+      return (nameMatched || phoneMatched) && matchesType && matchesDate;
     });
   };
 
@@ -2188,39 +2280,144 @@ export default function App() {
                   })()}
 
                   {/* Dynamic triggers for Dev check/automated comparison */}
-                  <div className="bg-blue-50/50 dark:bg-slate-900 border border-blue-150 dark:border-slate-880 p-5 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4 no-print shadow-sm">
+                  <div className="bg-blue-50/50 dark:bg-slate-900 border border-blue-150 dark:border-slate-880 p-5 rounded-2xl flex flex-col gap-4 no-print shadow-sm">
                     <div className="flex gap-3">
-                      <div className="p-2.5 bg-blue-100 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-xl inline-block flex-shrink-0">
+                      <div className="p-2.5 bg-blue-100 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-xl inline-block flex-shrink-0 self-start">
                         <Activity size={20} className="animate-pulse" />
                       </div>
                       <div>
                         <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200">
-                          Automated Sunday 6:00 PM Scheduler Engine
+                          Automated WhatsApp Message & Follow-up Scheduler Engine
                         </h4>
-                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                          Runs comparison every Sunday at 6:00 PM: Identifies
-                          who was present previous Sunday but missed today, sets
-                          statuses to Absent, sends Meta follow ups
-                          automatically.
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
+                          Automatically broadcasts weekly messages and handles Sunday comparisons. You can also trigger campaigns manually for testing or live broadasts below:
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex gap-2 w-full md:w-auto">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
+                      <button
+                        type="button"
+                        onClick={handleTriggerWednesdayCampaign}
+                        disabled={runningScheduler}
+                        className="py-2.5 px-3.5 bg-slate-850 hover:bg-slate-900 dark:bg-slate-800 dark:hover:bg-slate-750 text-white rounded-xl text-xs font-bold tracking-wide flex items-center justify-center gap-1.5 cursor-pointer shadow transition-all duration-150"
+                      >
+                        <RefreshCw
+                          size={13}
+                          className={runningScheduler ? "animate-spin" : ""}
+                        />
+                        <span>Run Wednesday Reminder</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleTriggerSaturdayCampaign}
+                        disabled={runningScheduler}
+                        className="py-2.5 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold tracking-wide flex items-center justify-center gap-1.5 cursor-pointer shadow transition-all duration-150"
+                      >
+                        <RefreshCw
+                          size={13}
+                          className={runningScheduler ? "animate-spin" : ""}
+                        />
+                        <span>Run Saturday Broadcaster</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={handleTriggerSundayComparison}
                         disabled={runningScheduler}
-                        className="py-2.5 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl text-xs font-bold tracking-wide flex items-center justify-center gap-1 cursor-pointer w-full md:w-auto shadow"
+                        className="py-2.5 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white rounded-xl text-xs font-bold tracking-wide flex items-center justify-center gap-1.5 cursor-pointer shadow transition-all duration-150"
                       >
                         <RefreshCw
-                          size={14}
+                          size={13}
                           className={runningScheduler ? "animate-spin" : ""}
                         />
-                        <span>Run Comparison Check Now</span>
+                        <span>Run Sunday Absent Check</span>
                       </button>
                     </div>
                   </div>
+
+                  {/* Absentee Registrants Dashboard Highlight */}
+                  {(() => {
+                    const absentMembersList = members.filter(m => m.currentStatus === "Absent");
+                    const absentWorkersList = workers.filter(w => w.currentStatus === "Absent");
+                    const totalAbsentees = absentMembersList.length + absentWorkersList.length;
+
+                    return (
+                      <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 sm:p-6 rounded-2xl shadow-sm space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 bg-rose-500 rounded-full animate-pulse" />
+                              <span>🚨 Roster Log Absentees (Follow-up List)</span>
+                            </h3>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              Registered members and workers who missed Sunday Experience and are currently marked as Absent.
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold font-mono px-2.5 py-1 bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-full shrink-0 self-start sm:self-auto">
+                            {totalAbsentees} Logged Absentees
+                          </span>
+                        </div>
+
+                        {totalAbsentees === 0 ? (
+                          <div className="p-6 bg-slate-50 dark:bg-slate-950 rounded-xl text-center text-xs font-medium text-slate-400 italic">
+                            No registrants are currently marked as Absent. Excellent attendance streak! 🎉
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[250px] overflow-y-auto pr-1">
+                            {/* Members */}
+                            <div className="space-y-2">
+                              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest pl-1">
+                                Absent Members ({absentMembersList.length})
+                              </h4>
+                              {absentMembersList.length === 0 ? (
+                                <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl text-center text-xs text-slate-400 italic">
+                                  No absent members
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {absentMembersList.map(m => (
+                                    <div key={m.id} className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-850 flex items-center justify-between text-xs">
+                                      <div>
+                                        <span className="font-bold text-slate-700 dark:text-slate-200">{m.firstName} {m.lastName}</span>
+                                        <span className="block font-mono text-[10px] text-slate-400 mt-0.5">{m.whatsAppNumber}</span>
+                                      </div>
+                                      <span className="px-2 py-0.5 rounded-md font-bold text-[9px] bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400 uppercase">Member</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Workers */}
+                            <div className="space-y-2">
+                              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest pl-1">
+                                Absent Workers ({absentWorkersList.length})
+                              </h4>
+                              {absentWorkersList.length === 0 ? (
+                                <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl text-center text-xs text-slate-400 italic">
+                                  No absent workers
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {absentWorkersList.map(w => (
+                                    <div key={w.id} className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-850 flex items-center justify-between text-xs">
+                                      <div>
+                                        <span className="font-bold text-slate-700 dark:text-slate-200">{w.firstName} {w.lastName}</span>
+                                        <span className="block font-mono text-[10px] text-slate-400 mt-0.5">{w.whatsAppNumber}</span>
+                                      </div>
+                                      <span className="px-2 py-0.5 rounded-md font-bold text-[9px] bg-violet-50 text-violet-600 dark:bg-violet-950/20 dark:text-violet-400 uppercase">Worker</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                    )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Interactive Recharts Analytics Panels */}
                   <AnalyticsCharts
@@ -3107,7 +3304,40 @@ export default function App() {
               {/* 5. WHATSAPP LOGS & CAMPAIGNS TAB */}
               {adminTab === "campaigns" && (
                 <div className="space-y-6" id="campaigns-tab-panel">
-                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col md:flex-row gap-3 items-center shadow-sm no-print">
+                  {/* Title & Stats Overview row */}
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                        Message Logs & Campaign Manager
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Track, search, filter, and resend failed automated or manual WhatsApp dispatches.
+                      </p>
+                    </div>
+                    
+                    {/* Tiny stats cards */}
+                    <div className="flex gap-4">
+                      <div className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/20 rounded-xl text-center">
+                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Total Dispatched</span>
+                        <span className="text-sm font-black text-indigo-600 dark:text-indigo-400">{whatsAppLogs.length}</span>
+                      </div>
+                      <div className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/20 rounded-xl text-center">
+                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Delivered/Read</span>
+                        <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                          {whatsAppLogs.filter(l => l.deliveryStatus === "Delivered" || l.deliveryStatus === "Read").length}
+                        </span>
+                      </div>
+                      <div className="px-3 py-1.5 bg-rose-50 dark:bg-rose-950/20 rounded-xl text-center">
+                        <span className="block text-[10px] text-slate-400 font-bold uppercase">Failed Logs</span>
+                        <span className="text-sm font-black text-rose-500 dark:text-rose-400 font-mono">
+                          {whatsAppLogs.filter(l => l.deliveryStatus === "Failed").length}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col lg:flex-row gap-3 items-center shadow-sm no-print">
+                    {/* Search */}
                     <div className="relative flex-1 w-full">
                       <Search
                         size={16}
@@ -3118,127 +3348,202 @@ export default function App() {
                         placeholder="Search campaign logs by spelling attendee name or phone..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-100"
+                        className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
+
+                    {/* Filter by campaign type */}
+                    <div className="w-full lg:w-48">
+                      <select
+                        value={campaignTypeFilter}
+                        onChange={(e) => setCampaignTypeFilter(e.target.value)}
+                        className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="all">All Campaign Types</option>
+                        <option value="Sunday Absentee Follow-Up">Sunday Absentee Follow-Up</option>
+                        <option value="Saturday Encouragement">Saturday Encouragement</option>
+                        <option value="Wednesday Word Cafe Reminder">Wednesday Word Cafe Reminder</option>
+                      </select>
+                    </div>
+
+                    {/* Filter by date sent */}
+                    <div className="w-full lg:w-44">
+                      <select
+                        value={campaignDateFilter}
+                        onChange={(e) => setCampaignDateFilter(e.target.value)}
+                        className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="all">All Dates</option>
+                        {Array.from(new Set(whatsAppLogs.map(log => log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "")).filter(Boolean))).sort().reverse().map(dt => (
+                          <option key={dt} value={dt}>{dt}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     <button
                       type="button"
                       onClick={() => {
-                        const rows = whatsAppLogs.map((log) => [
+                        const rows = getFilteredCampaignLogs().map((log) => [
+                          log.id,
                           log.personName,
                           log.personType,
                           log.whatsAppNumber,
+                          log.messageType || "Adhoc",
                           log.messageContent,
-                          log.sentAt,
+                          log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : ""),
+                          log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString() : ""),
                           log.deliveryStatus,
+                          log.readStatus || "Unread",
+                          log.failedStatus || ""
                         ]);
                         handleExportCSV(
                           rows,
                           [
+                            "Message ID",
                             "Person Name",
                             "Category",
                             "Roster Phone",
+                            "Campaign Type",
                             "Message Body",
-                            "Dispatched At",
+                            "Date Sent",
+                            "Time Sent",
                             "Delivery status",
+                            "Read Status",
+                            "Failed Reason"
                           ],
                           `whatsapp_dispatched_logs_${Date.now()}.csv`,
                         );
                       }}
-                      className="py-2 px-4 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 shrink-0 cursor-pointer"
+                      className="py-2 px-4 bg-slate-850 hover:bg-slate-900 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shrink-0 cursor-pointer w-full lg:w-auto"
                     >
-                      <FileSpreadsheet size={14} /> Export Logs CSV
+                      <FileSpreadsheet size={14} /> Export CSV
                     </button>
                   </div>
 
                   <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
                     <div className="overflow-x-auto min-h-[350px]">
-                      <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
+                      <table className="w-full text-left border-collapse text-xs sm:text-sm text-slate-700 dark:text-slate-350">
                         <thead>
                           <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
+                            <th className="py-3 px-4">Message ID</th>
                             <th className="py-3 px-4">Attendee Name</th>
                             <th className="py-3 px-4">WhatsApp Phone</th>
+                            <th className="py-3 px-4">Campaign/Msg Type</th>
                             <th className="py-3 px-4">Dispatched Message</th>
-                            <th className="py-3 px-4">Sent Timestamp</th>
-                            <th className="py-3 px-4">
-                              Delivery Status (Live webhook)
-                            </th>
-                            <th className="py-3 px-4 no-print">Action</th>
+                            <th className="py-3 px-4">Date & Time Sent</th>
+                            <th className="py-3 px-4">Delivery Status</th>
+                            <th className="py-3 px-4">Read Status</th>
+                            <th className="py-3 px-4">Failed Status</th>
+                            <th className="py-3 px-4 no-print text-right">Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {getFilteredCampaignLogs().length === 0 ? (
                             <tr>
                               <td
-                                colSpan={6}
-                                className="py-8 text-center text-xs font-semibold text-slate-400 tracking-widest uppercase italic"
+                                colSpan={10}
+                                className="py-12 text-center text-xs font-semibold text-slate-400 tracking-widest uppercase italic"
                               >
-                                No dispatched message logs registered yet.
+                                No dispatched message logs matched those filters.
                               </td>
                             </tr>
                           ) : (
-                            getFilteredCampaignLogs().map((log) => (
-                              <tr
-                                key={log.id}
-                                className="border-b last:border-0 border-slate-200/30 dark:border-slate-850 hover:bg-slate-50/50"
-                              >
-                                <td className="py-3 px-4">
-                                  <div className="font-bold text-slate-850 dark:text-slate-100">
-                                    {log.personName}
-                                  </div>
-                                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                    {log.personType}
-                                  </span>
-                                </td>
-                                <td className="py-3 px-4 font-mono text-xs">
-                                  {log.whatsAppNumber}
-                                </td>
-                                <td
-                                  className="py-3 px-4 max-w-xs sm:max-w-md truncate text-xs"
-                                  title={log.messageContent}
+                            getFilteredCampaignLogs().map((log) => {
+                              const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
+                              const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
+                              
+                              return (
+                                <tr
+                                  key={log.id}
+                                  className="border-b last:border-0 border-slate-200/30 dark:border-slate-850 hover:bg-slate-50/50"
                                 >
-                                  {log.messageContent}
-                                </td>
-                                <td className="py-3 px-4 font-mono text-xs">
-                                  {new Date(log.sentAt).toLocaleString()}
-                                </td>
-                                <td className="py-3 px-4">
-                                  <span
-                                    className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold leading-none ${
-                                      log.deliveryStatus === "Read"
-                                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
-                                        : log.deliveryStatus === "Delivered"
-                                          ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20 dark:text-cyan-400"
-                                          : log.deliveryStatus === "Failed"
-                                            ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 animate-pulse"
-                                            : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
-                                    }`}
+                                  <td className="py-3 px-4 font-mono text-[10px] text-slate-400">
+                                    #{log.id ? log.id.slice(0, 8) : "Adhoc"}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <div className="font-bold text-slate-850 dark:text-slate-100">
+                                      {log.personName}
+                                    </div>
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                      {log.personType}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 font-mono text-xs">
+                                    {log.whatsAppNumber}
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      log.messageType === "Saturday Encouragement" 
+                                        ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
+                                        : log.messageType === "Wednesday Word Cafe Reminder"
+                                          ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
+                                          : log.messageType === "Sunday Absentee Follow-Up"
+                                            ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
+                                            : "bg-slate-100 text-slate-700 dark:bg-slate-950/20 dark:text-slate-400"
+                                    }`}>
+                                      {log.messageType || "Adhoc Direct"}
+                                    </span>
+                                  </td>
+                                  <td
+                                    className="py-3 px-4 max-w-xs truncate text-[11px] leading-relaxed"
+                                    title={log.messageContent}
                                   >
+                                    {log.messageContent}
+                                  </td>
+                                  <td className="py-3 px-4 text-xs">
+                                    <div className="font-bold text-slate-700 dark:text-slate-300">{dsStr}</div>
+                                    <div className="text-[10px] font-mono text-slate-400">{tsStr}</div>
+                                  </td>
+                                  <td className="py-3 px-4">
                                     <span
-                                      className={`w-1.5 h-1.5 rounded-full ${
+                                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold leading-none ${
                                         log.deliveryStatus === "Read"
-                                          ? "bg-emerald-500"
+                                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
                                           : log.deliveryStatus === "Delivered"
-                                            ? "bg-cyan-400"
+                                            ? "bg-cyan-50 text-cyan-700 dark:bg-cyan-950/20 dark:text-cyan-400"
                                             : log.deliveryStatus === "Failed"
-                                              ? "bg-rose-500"
-                                              : "bg-indigo-505"
+                                              ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 animate-pulse"
+                                              : "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
                                       }`}
-                                    />
-                                    {log.deliveryStatus}
-                                  </span>
-                                </td>
-                                <td className="py-3 px-4 no-print">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleWhatsAppResend(log)}
-                                    className="p-1 px-2 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold shrink-0 flex items-center gap-1 cursor-pointer"
-                                  >
-                                    <Send size={11} /> Resend
-                                  </button>
-                                </td>
-                              </tr>
-                            ))
+                                    >
+                                      <span
+                                        className={`w-1.5 h-1.5 rounded-full ${
+                                          log.deliveryStatus === "Read"
+                                            ? "bg-emerald-500"
+                                            : log.deliveryStatus === "Delivered"
+                                              ? "bg-cyan-400"
+                                              : log.deliveryStatus === "Failed"
+                                                ? "bg-rose-500"
+                                                : "bg-indigo-500"
+                                        }`}
+                                      />
+                                      {log.deliveryStatus}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4">
+                                    <span className={`text-xs font-bold uppercase tracking-wider ${
+                                      log.readStatus === "Read" || log.deliveryStatus === "Read"
+                                        ? "text-emerald-600 dark:text-emerald-400"
+                                        : "text-slate-400"
+                                    }`}>
+                                      {log.readStatus === "Read" || log.deliveryStatus === "Read" ? "Read ✓✓" : "Unread"}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-4 max-w-[120px] truncate text-[10px] text-slate-400 italic" title={log.failedStatus || ""}>
+                                    {log.failedStatus || <span className="text-slate-350 dark:text-slate-600">—</span>}
+                                  </td>
+                                  <td className="py-3 px-4 no-print text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleWhatsAppResend(log)}
+                                      className="p-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
+                                    >
+                                      <Send size={11} /> Resend
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
                           )}
                         </tbody>
                       </table>

@@ -59,6 +59,11 @@ export interface WhatsAppLog {
   sentAt: string; // ISO string
   deliveryStatus: "Sent" | "Delivered" | "Read" | "Failed";
   wamid?: string | null; // WhatsApp message ID for webhook tracking
+  messageType?: "Saturday Encouragement" | "Wednesday Word Cafe Reminder" | "Sunday Absentee Follow-Up" | string;
+  dateSent?: string; // YYYY-MM-DD
+  timeSent?: string; // HH:MM:SS or AM/PM
+  readStatus?: "Unread" | "Read" | string;
+  failedStatus?: string;
 }
 
 export interface AppSettings {
