@@ -150,6 +150,13 @@ export default function App() {
   const [campaignTypeFilter, setCampaignTypeFilter] = useState("all");
   const [campaignDateFilter, setCampaignDateFilter] = useState("all");
 
+  // Batch attendance state
+  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setSelectedPersonIds([]);
+  }, [registerSubTab, sundayFilter]);
+
   // Detailed Modal states
   const [selectedDetailsPerson, setSelectedDetailsPerson] = useState<
     any | null
@@ -727,6 +734,80 @@ export default function App() {
 
       addNotification("Attendance checked / status toggled successfully!", "success");
       await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  const handleBatchMarkPresent = async () => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied: Pastors can only view reports.", "error");
+      return;
+    }
+
+    if (selectedPersonIds.length === 0) return;
+
+    const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : (sundaysList[0] || new Date().toISOString().split("T")[0]);
+    const personType = registerSubTab === "workers" ? "worker" : "member";
+
+    try {
+      const response = await fetch("/api/attendance/batch-present", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personIds: selectedPersonIds,
+          personType,
+          date: targetDate,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to submit batch attendance.");
+      }
+
+      addNotification(`Successfully checked in ${selectedPersonIds.length} people for ${targetDate}!`, "success");
+
+      // Instantly update local state without full reload!
+      const listToUpdate = personType === "worker" ? workers : members;
+      const selectedPersons = listToUpdate.filter(p => selectedPersonIds.includes(p.id));
+
+      const newRecords: AttendanceRecord[] = selectedPersons.map(person => ({
+        id: "rec_" + Math.random().toString(36).substring(2, 9),
+        date: targetDate,
+        personId: person.id,
+        personType,
+        firstName: person.firstName,
+        lastName: person.lastName,
+        whatsAppNumber: person.whatsAppNumber,
+        timestamp: new Date().toISOString()
+      }));
+
+      setAttendanceHistory(prev => [...newRecords, ...prev]);
+
+      if (personType === "member") {
+        setMembers(prev => prev.map(m => {
+          if (!selectedPersonIds.includes(m.id)) return m;
+          return {
+            ...m,
+            currentStatus: "Present",
+            lastAttendanceDate: !m.lastAttendanceDate || targetDate >= m.lastAttendanceDate ? targetDate : m.lastAttendanceDate
+          };
+        }));
+      } else {
+        setWorkers(prev => prev.map(w => {
+          if (!selectedPersonIds.includes(w.id)) return w;
+          return {
+            ...w,
+            currentStatus: "Present",
+            lastAttendanceDate: !w.lastAttendanceDate || targetDate >= w.lastAttendanceDate ? targetDate : w.lastAttendanceDate
+          };
+        }));
+      }
+
+      setSelectedPersonIds([]);
     } catch (err: any) {
       addNotification(err.message, "error");
     }
@@ -3011,6 +3092,45 @@ export default function App() {
                     )}
                   </div>
 
+                  {/* Batch Actions Panel */}
+                  {registerSubTab !== "history" && selectedPersonIds.length > 0 && adminRole !== "Pastor" && (
+                    <div
+                      className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-md shadow-blue-500/5 mb-4 no-print transition-all"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-blue-600 text-white rounded-xl shadow-sm flex items-center justify-center">
+                          <CheckCircle size={18} />
+                        </div>
+                        <div className="text-center sm:text-left">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-500 dark:text-blue-400">
+                            ⚡ Batch Check-In Controls
+                          </span>
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-100 mt-0.5">
+                            Selected <span className="text-blue-600 dark:text-blue-400 font-bold underline font-mono">{selectedPersonIds.length}</span> {registerSubTab === "workers" ? "workers" : "members"} for batch update.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full sm:w-auto justify-center sm:justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPersonIds([])}
+                          className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/50 rounded-xl transition-all cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleBatchMarkPresent}
+                          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-750 active:bg-blue-800 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-sm shadow-blue-600/15 uppercase tracking-widest leading-none outline-none hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          Mark Present
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Standard Registers Tables */}
                   <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
                     {/* Header text on Print */}
@@ -3228,6 +3348,27 @@ export default function App() {
                                   {/* Left subtle marker color depending on present/absent */}
                                   <div className={`absolute left-0 top-0 w-1 h-full ${isPresent ? "bg-emerald-500" : "bg-rose-500"}`} />
                                   
+                                  {adminRole !== "Pastor" && (
+                                    <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800/80 pb-2 mb-2 no-print">
+                                      <input
+                                        type="checkbox"
+                                        id={`mobile-checkbox-select-${person.id}`}
+                                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
+                                        checked={selectedPersonIds.includes(person.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setSelectedPersonIds((prev) => [...prev, person.id]);
+                                          } else {
+                                            setSelectedPersonIds((prev) => prev.filter((id) => id !== person.id));
+                                          }
+                                        }}
+                                      />
+                                      <label htmlFor={`mobile-checkbox-select-${person.id}`} className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider cursor-pointer select-none">
+                                        Select for batch check-in
+                                      </label>
+                                    </div>
+                                  )}
+
                                   <div className="flex justify-between items-start pl-1">
                                     <div>
                                       <button
@@ -3338,6 +3479,37 @@ export default function App() {
                           <table className="w-full text-left border-collapse text-sm text-slate-700 dark:text-slate-350">
                           <thead>
                             <tr className="bg-slate-50 dark:bg-slate-950 border-b border-slate-200/50 dark:border-slate-850 font-bold text-slate-500 uppercase tracking-wider text-[10px]">
+                              {adminRole !== "Pastor" && (
+                                <th className="py-3 px-4 w-12 no-print">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
+                                    checked={
+                                      getFilteredPersons(registerSubTab === "workers" ? workers : members).length > 0 &&
+                                      getFilteredPersons(registerSubTab === "workers" ? workers : members).every((p) =>
+                                        selectedPersonIds.includes(p.id)
+                                      )
+                                    }
+                                    onChange={(e) => {
+                                      const currentList = getFilteredPersons(registerSubTab === "workers" ? workers : members);
+                                      if (e.target.checked) {
+                                        setSelectedPersonIds((prev) => {
+                                          const next = [...prev];
+                                          currentList.forEach((p) => {
+                                            if (!next.includes(p.id)) next.push(p.id);
+                                          });
+                                          return next;
+                                        });
+                                      } else {
+                                        setSelectedPersonIds((prev) => {
+                                          const currentIds = currentList.map((p) => p.id);
+                                          return prev.filter((id) => !currentIds.includes(id));
+                                        });
+                                      }
+                                    }}
+                                  />
+                                </th>
+                              )}
                               <th className="py-3 px-4">Roster Full Name</th>
                               <th className="py-3 px-4">WhatsApp Phone</th>
                               <th className="py-3 px-4">Gender</th>
@@ -3360,7 +3532,7 @@ export default function App() {
                             ).length === 0 ? (
                               <tr>
                                 <td
-                                  colSpan={8}
+                                  colSpan={adminRole !== "Pastor" ? 9 : 8}
                                   className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed"
                                 >
                                   Roster is currently empty. Define records
@@ -3377,6 +3549,22 @@ export default function App() {
                                   key={person.id}
                                   className="border-b last:border-0 border-slate-200/30 dark:border-slate-850 hover:bg-slate-50/50"
                                 >
+                                  {adminRole !== "Pastor" && (
+                                    <td className="py-3 px-4 w-12 no-print border-r border-slate-100/50 dark:border-slate-850/40">
+                                      <input
+                                        type="checkbox"
+                                        className="rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
+                                        checked={selectedPersonIds.includes(person.id)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setSelectedPersonIds((prev) => [...prev, person.id]);
+                                          } else {
+                                            setSelectedPersonIds((prev) => prev.filter((id) => id !== person.id));
+                                          }
+                                        }}
+                                      />
+                                    </td>
+                                  )}
                                   <td className="py-3 px-4 font-bold text-slate-800 dark:text-slate-100">
                                     <button
                                       type="button"

@@ -1142,6 +1142,76 @@ app.post("/api/attendance/toggle", requireSubscription, async (req, res) => {
   }
 });
 
+// Admin-triggered batch mark present
+app.post("/api/attendance/batch-present", requireSubscription, async (req, res) => {
+  try {
+    const { personIds, personType, date, adminEmail, adminId } = req.body;
+    if (!personIds || !Array.isArray(personIds) || personIds.length === 0 || !personType) {
+      return res.status(400).json({ error: "Missing personIds or personType" });
+    }
+
+    const todaySunday = getSundayOfDate(new Date());
+    const targetDate = date && date !== "all" ? date : todaySunday;
+    const db = await getDb();
+    const collectionName = personType === "worker" ? "workers" : "members";
+
+    for (const personId of personIds) {
+      // Check if already present on targetDate
+      const existing = await db.collection("attendance").findOne({
+        personId,
+        date: targetDate
+      });
+
+      if (!existing) {
+        const person = await db.collection(collectionName).findOne({ id: personId });
+        if (person) {
+          const checkInTime = new Date().toISOString();
+          await db.collection("attendance").insertOne({
+            id: generateId(),
+            date: targetDate,
+            personId,
+            personType,
+            firstName: person.firstName,
+            lastName: person.lastName,
+            whatsAppNumber: person.whatsAppNumber,
+            timestamp: checkInTime
+          });
+
+          const isDefaultToday = targetDate === todaySunday;
+          const shouldUpdateDate = !person.lastAttendanceDate || targetDate >= person.lastAttendanceDate;
+
+          const updateSet: any = {};
+          if (shouldUpdateDate) {
+            updateSet.lastAttendanceDate = targetDate;
+          }
+          if (isDefaultToday || shouldUpdateDate) {
+            updateSet.currentStatus = "Present";
+            updateSet.attendedAtTime = checkInTime;
+          }
+
+          if (Object.keys(updateSet).length > 0) {
+            await db.collection(collectionName).updateOne(
+              { id: personId },
+              { $set: updateSet }
+            );
+          }
+
+          await addAuditLog(
+            adminId || "unknown",
+            adminEmail || "admin@church.org",
+            `Admin batch marked attendance: Marked ${person.firstName} ${person.lastName} as Present for ${targetDate}`
+          );
+        }
+      }
+    }
+
+    res.json({ success: true, count: personIds.length });
+  } catch (err: any) {
+    console.error("Batch attendance marking failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET Dashboards Stats
 app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
   try {
