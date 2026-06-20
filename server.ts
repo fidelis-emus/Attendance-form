@@ -666,7 +666,10 @@ app.post("/api/attendance/submit", async (req, res) => {
     const attendanceDate = d.toISOString().split("T")[0];
     const attendanceTime = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
     
-    const dateUsed = submissionDate ? submissionDate : attendanceDate;
+    const rawDate = submissionDate ? submissionDate : attendanceDate;
+    const [y, mStr, dStr] = rawDate.split("-").map(Number);
+    const localDate = new Date(y, mStr - 1, dStr);
+    const dateUsed = getSundayOfDate(localDate);
     const time = attendanceTime;
 
     const selectedEvent = eventType || "Sunday Experience"; // Default fallbacks 
@@ -861,7 +864,10 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
       return res.status(400).json({ error: "Missing personId" });
     }
 
-    const dateUsed = submissionDate ? submissionDate : new Date().toISOString().split("T")[0];
+    const rawDate = submissionDate ? submissionDate : new Date().toISOString().split("T")[0];
+    const [y, mStr, dStr] = rawDate.split("-").map(Number);
+    const localDate = new Date(y, mStr - 1, dStr);
+    const dateUsed = getSundayOfDate(localDate);
     const db = await getDb();
 
     // Look up in members
