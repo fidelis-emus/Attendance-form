@@ -461,6 +461,57 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// GET /qr-scan: scanned by users, generates unique 5-minute single-use token
+app.get("/qr-scan", async (req, res) => {
+  try {
+    const db = await getDb();
+    const token = "qr_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes limit
+    
+    await db.collection("qr_tokens").insertOne({
+      token,
+      createdAt: new Date(),
+      expiresAt,
+      used: false
+    });
+    
+    res.redirect(`/?view=guest&token=${token}`);
+  } catch (err: any) {
+    console.error("QR Code registration session initiation failed:", err);
+    res.status(500).send("For security reasons, please scan the official Church QR Code to take attendance.");
+  }
+});
+
+// GET /api/qr-tokens/validate: checks if user-submitted token is active, unused, and unexpired
+app.get("/api/qr-tokens/validate", async (req, res) => {
+  try {
+    const { token } = req.query;
+    if (!token) {
+      return res.status(400).json({ valid: false, error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+    
+    const db = await getDb();
+    const tokenRef = await db.collection("qr_tokens").findOne({ token: token as string });
+    
+    if (!tokenRef) {
+      return res.status(400).json({ valid: false, error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+    
+    if (tokenRef.used) {
+      return res.status(400).json({ valid: false, error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+    
+    const now = new Date();
+    if (now > new Date(tokenRef.expiresAt)) {
+      return res.status(400).json({ valid: false, error: "This secure QR session has expired (5-minute limit). Please scan the QR code again." });
+    }
+    
+    res.json({ valid: true });
+  } catch (err: any) {
+    res.status(500).json({ valid: false, error: err.message });
+  }
+});
+
 // GET Current System Subscription Status
 app.get("/api/subscription/info", async (req, res) => {
   try {
@@ -580,9 +631,28 @@ app.post("/api/subscription/apply", async (req, res) => {
 // Submit Attendance Form (Public Client endpoint or returning scanner checklist)
 app.post("/api/attendance/submit", async (req, res) => {
   try {
-    const { personId, firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender, eventType } = req.body;
+    const { token, personId, firstName, lastName, whatsAppNumber, attendeeType, submissionDate, gender, eventType } = req.body;
 
     const db = await getDb();
+
+    // 1. MUST Validate the QR Session Token for ANY submission
+    if (!token) {
+      return res.status(403).json({ error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+
+    const tokenRef = await db.collection("qr_tokens").findOne({ token });
+    if (!tokenRef) {
+      return res.status(403).json({ error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+
+    if (tokenRef.used) {
+      return res.status(403).json({ error: "For security reasons, please scan the official Church QR Code to take attendance." });
+    }
+
+    const now = new Date();
+    if (now > new Date(tokenRef.expiresAt)) {
+      return res.status(403).json({ error: "This secure QR session has expired (5-minute limit). Please scan the QR code again." });
+    }
     
     // Server real-time date/time calculations
     const d = new Date();
@@ -624,13 +694,8 @@ app.post("/api/attendance/submit", async (req, res) => {
       });
 
       if (checkDupRef) {
-        return res.json({
-          status: "already_checked_in",
-          personId,
-          personType: resolvedType,
-          firstName: existing.firstName,
-          lastName: existing.lastName,
-          message: `You have already taken attendance for ${selectedEvent} today. God Bless you.`
+        return res.status(400).json({
+          error: "You have already taken attendance for this program today. God Bless you."
         });
       }
 
@@ -671,6 +736,9 @@ app.post("/api/attendance/submit", async (req, res) => {
         status: "Present",
         timestamp: new Date().toISOString(),
       });
+
+      // Mark the token as used before returning successfully!
+      await db.collection("qr_tokens").updateOne({ token }, { $set: { used: true } });
 
       return res.json({
         status: "success_returning",
@@ -739,14 +807,8 @@ app.post("/api/attendance/submit", async (req, res) => {
     });
 
     if (checkDupRef) {
-      const existingName = existing ? existing.firstName : firstName.trim();
-      return res.json({
-        status: "already_checked_in",
-        personId: activeId,
-        personType,
-        firstName: existingName,
-        lastName: existing ? existing.lastName : lastName.trim(),
-        message: `You have already taken attendance for ${selectedEvent} today. God Bless you.`
+      return res.status(400).json({
+        error: "You have already taken attendance for this program today. God Bless you."
       });
     }
 
@@ -773,6 +835,9 @@ app.post("/api/attendance/submit", async (req, res) => {
       status: "Present",
       timestamp: new Date().toISOString(),
     });
+
+    // Mark the token as used before returning successfully!
+    await db.collection("qr_tokens").updateOne({ token }, { $set: { used: true } });
 
     return res.json({
       status: "success_new",

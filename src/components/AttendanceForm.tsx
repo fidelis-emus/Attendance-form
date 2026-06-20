@@ -59,6 +59,13 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
   const [resolvedStatus, setResolvedStatus] = useState<string>("");
   const [resolvedMsg, setResolvedMsg] = useState("");
 
+  // Secure QR Attendance States
+  const [token, setToken] = useState<string | null>(null);
+  const [tokenValid, setTokenValid] = useState<"checking" | "valid" | "invalid">("checking");
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [successSubmittedToken, setSuccessSubmittedToken] = useState<boolean>(false);
+  const [duplicateCheckedIn, setDuplicateCheckedIn] = useState<boolean>(false);
+
   useEffect(() => {
     let resolvedDate = "";
     if (defaultDate) {
@@ -80,12 +87,51 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
 
     setServiceDate(resolvedDate);
 
-    // Smart Recognition of Returning Attendees via saved profile
-    const savedId = localStorage.getItem("attendance_profile_id");
-    if (savedId && resolvedDate) {
-      triggerAutoCheckin(savedId, resolvedDate);
+    // Parse security token from query parameters
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get("token");
+    setToken(urlToken);
+
+    if (!urlToken) {
+      setTokenValid("invalid");
+      setTokenError("For security reasons, please scan the official Church QR Code to take attendance.");
+      return;
     }
-  }, [defaultDate]);
+
+    // Check if we already submitted in this session
+    const isSubmitted = localStorage.getItem(`attendance_success_${urlToken}`);
+    if (isSubmitted === "true") {
+      setSuccessSubmittedToken(true);
+      setTokenValid("valid");
+      return;
+    }
+
+    // Verify token status on background server
+    const checkToken = async () => {
+      try {
+        const response = await fetch(`/api/qr-tokens/validate?token=${urlToken}`);
+        const data = await response.json();
+        
+        if (response.ok && data.valid) {
+          setTokenValid("valid");
+          
+          // Smart Recognition of Returning Attendees via saved profile ONLY if scan token is active
+          const savedId = localStorage.getItem("attendance_profile_id");
+          if (savedId && resolvedDate) {
+            triggerAutoCheckin(savedId, resolvedDate);
+          }
+        } else {
+          setTokenValid("invalid");
+          setTokenError(data.error || "For security reasons, please scan the official Church QR Code to take attendance.");
+        }
+      } catch (err) {
+        setTokenValid("invalid");
+        setTokenError("For security reasons, please scan the official Church QR Code to take attendance.");
+      }
+    };
+
+    checkToken();
+  }, [defaultDate, window.location.search]);
 
   const triggerAutoCheckin = async (personId: string, date: string) => {
     setAutoChecking(true);
@@ -163,6 +209,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          token: token,
           firstName: firstName.trim(),
           lastName: lastName.trim(),
           whatsAppNumber: whatsAppNumber,
@@ -200,11 +247,17 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
         }));
       }
 
-      setResolvedStatus(data.status);
-      setResolvedMsg(data.message);
-      setSuccess(true);
+      if (token) {
+        localStorage.setItem(`attendance_success_${token}`, "true");
+      }
+      setSuccessSubmittedToken(true);
     } catch (err: any) {
-      setError(err?.message || "Something went wrong while logging attendance. Please try again.");
+      const errMsg = err?.message || "";
+      if (errMsg.includes("already taken") || errMsg.includes("already_checked_in")) {
+        setDuplicateCheckedIn(true);
+      } else {
+        setError(errMsg || "Something went wrong while logging attendance. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -216,7 +269,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
 
     // Direct local warning for checked events to skip waiting for the server response
     if (checkedEvents[eventTypeArg]) {
-      setError(`You have already taken attendance for this program today. God Bless you.`);
+      setDuplicateCheckedIn(true);
       return;
     }
 
@@ -228,6 +281,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          token: token,
           personId: recognizedProfile.id,
           eventType: eventTypeArg,
           submissionDate: serviceDate
@@ -239,18 +293,19 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
         throw new Error(data.error || "Failed to record attendance.");
       }
 
-      if (data.status === "already_checked_in") {
-        setError("You have already taken attendance for this program today. God Bless you.");
-        setCheckedEvents(prev => ({ ...prev, [eventTypeArg]: true }));
-      } else {
-        // Successful check-in!
-        setCheckedEvents(prev => ({ ...prev, [eventTypeArg]: true }));
-        setResolvedStatus(data.status);
-        setResolvedMsg(data.message);
-        setSuccess(true);
+      // Successful check-in!
+      setCheckedEvents(prev => ({ ...prev, [eventTypeArg]: true }));
+      if (token) {
+        localStorage.setItem(`attendance_success_${token}`, "true");
       }
+      setSuccessSubmittedToken(true);
     } catch (err: any) {
-      setError(err?.message || "Something went wrong recording your attendance. Please try again.");
+      const errMsg = err?.message || "";
+      if (errMsg.includes("already taken") || errMsg.includes("already_checked_in")) {
+        setDuplicateCheckedIn(true);
+      } else {
+        setError(errMsg || "Something went wrong recording your attendance. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -294,6 +349,71 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
       return dateStr;
     }
   };
+
+  // RENDER: Token Session Verification in Progress
+  if (tokenValid === "checking") {
+    return (
+      <div className="w-full max-w-md mx-auto p-12 text-center bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-xl flex flex-col items-center justify-center animate-pulse" id="verify-session-panel">
+        <RefreshCw className="animate-spin text-blue-600 dark:text-blue-400 mb-4" size={36} />
+        <h3 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100">Verifying Session</h3>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-2">Checking secure church roster entry guidelines...</p>
+      </div>
+    );
+  }
+
+  // RENDER: Security Violation Lock Screen (Expired/Invalid or Missing Token parameter)
+  if (tokenValid === "invalid") {
+    return (
+      <div className="w-full max-w-md mx-auto p-10 bg-white dark:bg-slate-900 rounded-3xl border border-rose-500/20 shadow-xl text-center relative overflow-hidden" id="qr-invalid-panel">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-rose-400 to-red-500" />
+        <div className="mx-auto w-16 h-16 bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-455 rounded-full flex items-center justify-center mb-6 shadow-sm">
+          <Shield size={32} strokeWidth={2} className="animate-pulse" />
+        </div>
+        <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 mb-4 tracking-tight">
+          Secure Attendance Required
+        </h2>
+        <p className="text-sm text-slate-600 dark:text-slate-350 font-sans tracking-wide leading-relaxed font-semibold">
+          {tokenError || "For security reasons, please scan the official Church QR Code to take attendance."}
+        </p>
+      </div>
+    );
+  }
+
+  // RENDER: Absolute Success page with ONLY successful message, visible indefinitely, with NO back/recheck buttons
+  if (successSubmittedToken) {
+    return (
+      <div className="w-full max-w-md mx-auto p-10 bg-white dark:bg-slate-900 rounded-3xl border border-emerald-500/20 shadow-xl text-center relative overflow-hidden animate-fade-in" id="qr-success-panel">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-emerald-400 to-teal-500" />
+        <div className="mx-auto w-16 h-16 bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center mb-6 shadow-sm">
+          <Check size={32} strokeWidth={2.5} />
+        </div>
+        <h2 className="text-2xl font-display font-bold text-slate-800 dark:text-slate-100 mb-4 tracking-tight">
+          Attendance Recorded
+        </h2>
+        <p className="text-base text-slate-700 dark:text-slate-200 font-sans tracking-wide leading-relaxed font-semibold px-2">
+          God Bless you. Enjoy the rest of the service in God's presence.
+        </p>
+      </div>
+    );
+  }
+
+  // RENDER: Duplicate Check-In Protection Screen
+  if (duplicateCheckedIn) {
+    return (
+      <div className="w-full max-w-md mx-auto p-10 bg-white dark:bg-slate-900 rounded-3xl border border-amber-500/20 shadow-xl text-center relative overflow-hidden animate-fade-in" id="qr-duplicate-panel">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-amber-400 to-orange-500" />
+        <div className="mx-auto w-16 h-16 bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-450 rounded-full flex items-center justify-center mb-6 shadow-sm">
+          <span className="text-2xl">👋</span>
+        </div>
+        <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 mb-4 tracking-tight">
+          Already Registered
+        </h2>
+        <p className="text-base text-slate-705 dark:text-slate-205 font-sans tracking-wide leading-relaxed font-semibold px-2">
+          You have already taken attendance for this program today. God Bless you.
+        </p>
+      </div>
+    );
+  }
 
   // RENDER: Loading smart profile
   if (autoChecking) {

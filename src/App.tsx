@@ -732,6 +732,126 @@ export default function App() {
     }
   };
 
+  // Instant, single-person quick status toggle without full roster reload
+  const handleQuickToggleAttendance = async (personId: string, personType: "member" | "worker") => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied: Pastors can only view reports.", "error");
+      return;
+    }
+
+    const targetDate = sundayFilter && sundayFilter !== "all" ? sundayFilter : (sundaysList[0] || new Date().toISOString().split("T")[0]);
+
+    try {
+      const response = await fetch("/api/attendance/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personId,
+          personType,
+          date: targetDate,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to toggle attendance status.");
+      }
+
+      const resData = await response.json();
+      const newStatus = resData.newStatus as "Present" | "Absent";
+      
+      addNotification(`Attendance marked as ${newStatus} for ${targetDate} successfully!`, "success");
+
+      // Instantly update local state without full reload!
+      if (newStatus === "Present") {
+        const newRecord: AttendanceRecord = {
+          id: "rec_" + Math.random().toString(36).substring(2, 9),
+          date: targetDate,
+          personId,
+          personType,
+          firstName: selectedDetailsPerson.firstName,
+          lastName: selectedDetailsPerson.lastName,
+          whatsAppNumber: selectedDetailsPerson.whatsAppNumber,
+          timestamp: new Date().toISOString()
+        };
+        setAttendanceHistory(prev => [newRecord, ...prev]);
+      } else {
+        setAttendanceHistory(prev => prev.filter(rec => !(rec.personId === personId && rec.date === targetDate)));
+      }
+
+      // Update selectedDetailsPerson status and recalculate lastAttendanceDate
+      setSelectedDetailsPerson((prev: any) => {
+        if (!prev) return null;
+        let updatedLastAttendanceDate = prev.lastAttendanceDate;
+        if (newStatus === "Present") {
+          if (!prev.lastAttendanceDate || targetDate >= prev.lastAttendanceDate) {
+            updatedLastAttendanceDate = targetDate;
+          }
+        } else {
+          // Find the next latest date from remaining records for this person
+          const remainingRecords = attendanceHistory
+            .filter(rec => rec.personId === personId && rec.date !== targetDate)
+            .sort((a, b) => b.date.localeCompare(a.date));
+          updatedLastAttendanceDate = remainingRecords.length > 0 ? remainingRecords[0].date : "";
+        }
+
+        return {
+          ...prev,
+          currentStatus: newStatus,
+          lastAttendanceDate: updatedLastAttendanceDate
+        };
+      });
+
+      // Update members/workers state instantly so the main table/lists update too!
+      if (personType === "member") {
+        setMembers(prev => prev.map(m => {
+          if (m.id !== personId) return m;
+          let updatedLastAttendanceDate = m.lastAttendanceDate;
+          if (newStatus === "Present") {
+            if (!m.lastAttendanceDate || targetDate >= m.lastAttendanceDate) {
+              updatedLastAttendanceDate = targetDate;
+            }
+          } else {
+            const remainingRecords = attendanceHistory
+              .filter(rec => rec.personId === personId && rec.date !== targetDate)
+              .sort((a,b) => b.date.localeCompare(a.date));
+            updatedLastAttendanceDate = remainingRecords.length > 0 ? remainingRecords[0].date : "";
+          }
+          return {
+            ...m,
+            currentStatus: newStatus,
+            lastAttendanceDate: updatedLastAttendanceDate
+          };
+        }));
+      } else {
+        setWorkers(prev => prev.map(w => {
+          if (w.id !== personId) return w;
+          let updatedLastAttendanceDate = w.lastAttendanceDate;
+          if (newStatus === "Present") {
+            if (!w.lastAttendanceDate || targetDate >= w.lastAttendanceDate) {
+              updatedLastAttendanceDate = targetDate;
+            }
+          } else {
+            const remainingRecords = attendanceHistory
+              .filter(rec => rec.personId === personId && rec.date !== targetDate)
+              .sort((a,b) => b.date.localeCompare(a.date));
+            updatedLastAttendanceDate = remainingRecords.length > 0 ? remainingRecords[0].date : "";
+          }
+          return {
+            ...w,
+            currentStatus: newStatus,
+            lastAttendanceDate: updatedLastAttendanceDate
+          };
+        }));
+      }
+
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
   // Save Meta WhatsApp Settings API parameters
   const handleSaveWhatsAppConfig = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -5138,6 +5258,48 @@ export default function App() {
 
                   {/* Modal Content - Scrollable Grid */}
                   <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    {/* Quick Action Controls */}
+                    <div className="bg-slate-50 dark:bg-slate-950/65 border border-slate-100 dark:border-slate-850 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                      <div className="flex flex-col text-center sm:text-left">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                          ⚡ Quick Actions & Instant Controls
+                        </span>
+                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                          Reach this person on WhatsApp or toggle their attendance status instantly.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* Quick WhatsApp Button */}
+                        <a
+                          href={`https://wa.me/${selectedDetailsPerson.whatsAppNumber.replace(/\D/g, "")}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          id="quick-whatsapp-btn"
+                          className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-xl text-xs transition-all cursor-pointer shadow-sm shadow-emerald-600/10 uppercase tracking-widest leading-none outline-none hover:scale-[1.02] active:scale-[0.98]"
+                        >
+                          <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                            <path d="M12.031 6.172c-3.202 0-5.805 2.604-5.805 5.806 0 1.024.266 2.025.77 2.905l-.818 2.99 3.056-.801c.85.463 1.805.707 2.797.707 3.203 0 5.806-2.603 5.806-5.806.001-3.203-2.602-5.807-5.806-5.807zm3.111 8.18c-.128.36-.74.697-1.023.738-.282.041-.628.058-1-.059-.243-.076-.554-.187-1-.383-1.895-.83-3.125-2.756-3.219-2.887-.095-.128-.767-1.019-.767-1.944a2.03 2.03 0 0 1 .632-1.52c.168-.179.362-.224.484-.224.095 0 .19.001.272.005.087.004.204-.034.32.246.128.31.437 1.062.475 1.139.038.077.062.167.012.269-.05.102-.1.167-.179.256-.076.089-.161.196-.23.272-.077.086-.157.18-.067.336.089.155.39.643.837 1.041.576.512 1.058.672 1.209.749.153.076.243.064.333-.039.09-.102.385-.448.487-.601.102-.153.204-.128.34-.077.137.051.867.41 1.017.485.15.076.25.112.285.176.035.064.035.373-.093.733zM12 .003C5.373.003 0 5.376 0 12.003c0 2.112.551 4.165 1.597 5.973L.044 24l6.191-1.62c1.737.946 3.693 1.446 5.765 1.446 6.627 0 12-5.373 12-12C24 5.376 18.627.003 12.003.003z" />
+                          </svg>
+                          WhatsApp Chat
+                        </a>
+
+                        {/* Toggle Quick Attendance Button */}
+                        <button
+                          type="button"
+                          id="quick-toggle-attendance-btn"
+                          onClick={() => handleQuickToggleAttendance(selectedDetailsPerson.id, selectedDetailsPersonType!)}
+                          className={`inline-flex items-center gap-2 px-4 py-2.5 font-bold rounded-xl text-xs transition-all cursor-pointer uppercase tracking-widest leading-none outline-none hover:scale-[1.02] active:scale-[0.98] ${
+                            selectedDetailsPerson.currentStatus === "Present"
+                              ? "bg-rose-50 border border-rose-200 text-rose-700 dark:bg-rose-950/20 dark:border-rose-900/50 dark:text-rose-400 hover:bg-rose-100"
+                              : "bg-blue-600 hover:bg-blue-700 hover:shadow-blue-600/10 active:bg-blue-800 text-white"
+                          }`}
+                        >
+                          <CheckCircle size={15} />
+                          {selectedDetailsPerson.currentStatus === "Present" ? "Mark Absent" : "Mark Present"}
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Stats Summary Cards */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       <div className="bg-slate-50 dark:bg-slate-950/50 border border-slate-200/40 dark:border-slate-850 p-4 rounded-2xl">

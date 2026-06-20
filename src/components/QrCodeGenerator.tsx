@@ -14,9 +14,10 @@ export default function QrCodeGenerator({ appUrl }: QrProps) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   
-  // The permanent QR code points directly to the roots public attendance registry page.
-  // The system's smart detection will automatically verify returning users or show registration form.
-  const targetUrl = appUrl || window.location.origin;
+  // The permanent QR code points directly to the roots public attendance secure scan endpoint.
+  // The secure endpoint generates a single-use token and redirects back to the registry page.
+  const baseUrl = appUrl || window.location.origin;
+  const targetUrl = baseUrl.endsWith("/") ? `${baseUrl}qr-scan` : `${baseUrl}/qr-scan`;
 
   useEffect(() => {
     if (!canvasRef.current) return;
