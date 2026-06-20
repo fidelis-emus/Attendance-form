@@ -26,7 +26,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [whatsAppNumber, setWhatsAppNumber] = useState("");
-  const [role, setRole] = useState<"member" | "worker">("member");
+  const [role, setRole] = useState<"member" | "worker" | "children">("member");
   const [gender, setGender] = useState<"Male" | "Female" | "">("");
   const [selectedEvent, setSelectedEvent] = useState<"Sunday Experience" | "Word Cafe" | "Special Program" | "">("");
 
@@ -783,7 +783,7 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
               <span className="block text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest mb-2.5">
                 Role Category <span className="text-rose-500">*</span>
               </span>
-              <div className="flex flex-col sm:flex-row gap-4 p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-850">
+              <div className="flex flex-col md:flex-row gap-4 p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-850">
                 <label 
                   htmlFor="role-member" 
                   className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
@@ -798,6 +798,23 @@ export default function AttendanceForm({ defaultDate }: AttendanceFormProps) {
                   <div className="flex flex-col">
                     <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Member</span>
                     <span className="text-[10px] text-slate-400">Regular congregation attendee</span>
+                  </div>
+                </label>
+
+                <label 
+                  htmlFor="role-children" 
+                  className="flex-1 flex items-center gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/60 rounded-xl hover:bg-slate-100/50 dark:hover:bg-slate-850 cursor-pointer transition-all shadow-sm"
+                >
+                  <input
+                    type="checkbox"
+                    id="role-children"
+                    checked={role === "children"}
+                    onChange={() => setRole("children")}
+                    className="w-5 h-5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">Children Department</span>
+                    <span className="text-[10px] text-slate-400">Kids and youth ministry</span>
                   </div>
                 </label>
 

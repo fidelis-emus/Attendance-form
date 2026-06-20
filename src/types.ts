@@ -10,6 +10,7 @@ export interface Member {
   messageSent: boolean;
   messageSentDate: string | null; // ISO String or Date
   messageDeliveryStatus: "Sent" | "Delivered" | "Read" | "Failed" | null;
+  role?: string;
 }
 
 export interface Worker {
@@ -30,7 +31,7 @@ export interface AttendanceRecord {
   id: string;
   date: string; // YYYY-MM-DD
   personId: string; // References Member or Worker ID
-  personType: "member" | "worker";
+  personType: "member" | "worker" | "children" | "chiden";
   firstName: string;
   lastName: string;
   whatsAppNumber: string;

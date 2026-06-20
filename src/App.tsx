@@ -162,12 +162,12 @@ export default function App() {
     any | null
   >(null);
   const [selectedDetailsPersonType, setSelectedDetailsPersonType] = useState<
-    "member" | "worker" | null
+    "member" | "worker" | "children" | "chiden" | null
   >(null);
 
   // Creation Modals or Quick Forms
   const [showAddPersonModal, setShowAddPersonModal] = useState(false);
-  const [newPersonType, setNewPersonType] = useState<"member" | "worker">(
+  const [newPersonType, setNewPersonType] = useState<"member" | "worker" | "children">(
     "member",
   );
   const [newPerson, setNewPerson] = useState({
@@ -552,6 +552,7 @@ export default function App() {
           lastAttendanceDate: "",
           adminEmail: user?.email,
           adminId: user?.uid,
+          role: type === "children" ? "chiden" : type,
         }),
       });
 
@@ -2469,8 +2470,9 @@ export default function App() {
                           onChange={(e) => setDashboardRoleFilter(e.target.value)}
                           className="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         >
-                          <option value="all">All Ranks (Members & Workers)</option>
+                          <option value="all">All Ranks (Members, Workers & Children)</option>
                           <option value="member">Members Only</option>
+                          <option value="chiden">Children Only</option>
                           <option value="worker">Workers Only</option>
                         </select>
                       </div>
@@ -3381,6 +3383,11 @@ export default function App() {
                                         title="View detailed attendance history & timeline"
                                       >
                                         <span>{person.firstName} {person.lastName}</span>
+                                        {person.role === "chiden" && (
+                                          <span className="text-[9px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-955/20 border border-amber-200/40 select-none" title="Children Department">
+                                            🧒 Children
+                                          </span>
+                                        )}
                                         <span className="text-[9px] font-bold text-blue-500 px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40">
                                           profile 👤
                                         </span>
@@ -3576,6 +3583,11 @@ export default function App() {
                                       title="View detailed attendance history & timeline"
                                     >
                                       <span>{person.firstName} {person.lastName}</span>
+                                      {person.role === "chiden" && (
+                                        <span className="text-[9px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-955/20 border border-amber-200/40 select-none" title="Children Department">
+                                          🧒 Children
+                                        </span>
+                                      )}
                                       <span className="text-[10px] text-blue-500 font-normal no-underline px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40">
                                         profile 👤
                                       </span>
@@ -3882,6 +3894,11 @@ export default function App() {
                                         title="View detailed attendance history & timeline"
                                       >
                                         <span>{person.firstName} {person.lastName}</span>
+                                        {person.role === "chiden" && (
+                                          <span className="text-[9px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-955/20 border border-amber-200/40 select-none" title="Children Department">
+                                            🧒 Children
+                                          </span>
+                                        )}
                                         <span className="text-[10px] text-blue-500 font-normal no-underline px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40">
                                           profile 👤
                                         </span>
@@ -5783,6 +5800,17 @@ export default function App() {
                           }`}
                         >
                           Member
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewPersonType("children")}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold border ${
+                            newPersonType === "children"
+                              ? "bg-amber-600 border-amber-600 text-white"
+                              : "bg-slate-50 dark:bg-slate-950 text-slate-500 border-slate-200 dark:border-slate-850"
+                          }`}
+                        >
+                          Children
                         </button>
                         <button
                           type="button"

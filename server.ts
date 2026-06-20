@@ -683,6 +683,10 @@ app.post("/api/attendance/submit", async (req, res) => {
         if (existing) {
           resolvedType = "worker";
         }
+      } else {
+        if (existing.role === "chiden" || existing.role === "children") {
+          resolvedType = "chiden";
+        }
       }
 
       if (!existing) {
@@ -723,7 +727,7 @@ app.post("/api/attendance/submit", async (req, res) => {
         personId,
         memberId: personId,
         personType: resolvedType,
-        role: resolvedType === "worker" ? "Worker" : "Member",
+        role: resolvedType === "worker" ? "Worker" : (resolvedType === "chiden" ? "chiden" : "Member"),
         firstName: existing.firstName,
         lastName: existing.lastName,
         whatsAppNumber: existing.whatsAppNumber,
@@ -779,7 +783,7 @@ app.post("/api/attendance/submit", async (req, res) => {
     let activeId = "";
     if (!existing) {
       // Create new profile
-      personType = attendeeType === "worker" ? "worker" : "member";
+      personType = attendeeType === "worker" ? "worker" : ((attendeeType === "children" || attendeeType === "chiden") ? "chiden" : "member");
       const collectionName = personType === "worker" ? "workers" : "members";
       activeId = generateId();
 
@@ -796,10 +800,15 @@ app.post("/api/attendance/submit", async (req, res) => {
         messageSent: false,
         messageSentDate: null,
         messageDeliveryStatus: null,
+        role: personType,
       });
     } else {
       activeId = existing.id;
       personType = existing.role || personType;
+      if (personType === "member" && (attendeeType === "children" || attendeeType === "chiden")) {
+        personType = "chiden";
+        await db.collection("members").updateOne({ id: activeId }, { $set: { role: "chiden" } });
+      }
     }
 
     // Validate Event Duplicates
@@ -822,7 +831,7 @@ app.post("/api/attendance/submit", async (req, res) => {
       personId: activeId,
       memberId: activeId,
       personType: personType,
-      role: personType === "worker" ? "Worker" : "Member",
+      role: personType === "worker" ? "Worker" : (personType === "chiden" ? "chiden" : "Member"),
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       whatsAppNumber: phoneNum,
@@ -1097,11 +1106,13 @@ app.post("/api/attendance/toggle", requireSubscription, async (req, res) => {
     } else {
       // Toggle to Present -> Create database check-in entry
       const checkInTime = new Date().toISOString();
+      const pType = person.role === "chiden" ? "chiden" : personType;
       await db.collection("attendance").insertOne({
         id: generateId(),
         date: targetDate,
         personId,
-        personType,
+        personType: pType,
+        role: pType === "worker" ? "Worker" : (pType === "chiden" ? "chiden" : "Member"),
         firstName: person.firstName,
         lastName: person.lastName,
         whatsAppNumber: person.whatsAppNumber,
@@ -1166,11 +1177,13 @@ app.post("/api/attendance/batch-present", requireSubscription, async (req, res) 
         const person = await db.collection(collectionName).findOne({ id: personId });
         if (person) {
           const checkInTime = new Date().toISOString();
+          const pType = person.role === "chiden" ? "chiden" : personType;
           await db.collection("attendance").insertOne({
             id: generateId(),
             date: targetDate,
             personId,
-            personType,
+            personType: pType,
+            role: pType === "worker" ? "Worker" : (pType === "chiden" ? "chiden" : "Member"),
             firstName: person.firstName,
             lastName: person.lastName,
             whatsAppNumber: person.whatsAppNumber,
@@ -1317,11 +1330,12 @@ app.get("/api/members", requireSubscription, async (req, res) => {
 
 app.post("/api/members", requireSubscription, async (req, res) => {
   try {
-    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes, gender } = req.body;
+    const { firstName, lastName, whatsAppNumber, currentStatus, lastAttendanceDate, adminEmail, adminId, notes, gender, role } = req.body;
     if (!firstName || !lastName || !whatsAppNumber) {
       return res.status(400).json({ error: "Missing fields" });
     }
     const id = generateId();
+    const inputRole = (role === "children" || role === "chiden") ? "chiden" : (role || "member");
     const data = {
       id,
       firstName: firstName.trim(),
@@ -1334,6 +1348,7 @@ app.post("/api/members", requireSubscription, async (req, res) => {
       messageSent: false,
       messageSentDate: null,
       messageDeliveryStatus: null,
+      role: inputRole,
     };
     const db = await getDb();
     await db.collection("members").insertOne(data);
