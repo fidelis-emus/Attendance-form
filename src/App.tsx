@@ -701,7 +701,7 @@ export default function App() {
   };
 
   // Delete Individual Person
-  const handleDeletePerson = async (id: string, type: "member" | "worker") => {
+  const handleDeletePerson = async (id: string, type: "member" | "worker" | "children" | "chiden") => {
     if (
       !window.confirm(
         `Are you absolutely sure you want to remove this ${type}?`,
@@ -739,7 +739,7 @@ export default function App() {
   };
 
   // Real-time admin quick status toggle
-  const handleToggleAttendance = async (personId: string, personType: "member" | "worker") => {
+  const handleToggleAttendance = async (personId: string, personType: "member" | "worker" | "children" | "chiden") => {
     if (adminRole === "Pastor") {
       addNotification("Access Denied: Pastors can only view reports.", "error");
       return;
@@ -845,7 +845,7 @@ export default function App() {
   };
 
   // Instant, single-person quick status toggle without full roster reload
-  const handleQuickToggleAttendance = async (personId: string, personType: "member" | "worker") => {
+  const handleQuickToggleAttendance = async (personId: string, personType: "member" | "worker" | "children" | "chiden") => {
     if (adminRole === "Pastor") {
       addNotification("Access Denied: Pastors can only view reports.", "error");
       return;

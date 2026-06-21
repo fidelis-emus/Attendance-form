@@ -2627,11 +2627,12 @@ async function sendWeeklyEmailSummary(dateStr: string): Promise<{ success: boole
     return { success: false, message: "SMTP configuration is incomplete. Host, user, password, and leader emails are required." };
   }
 
-  // Fetch roster & attendance for specific Sunday
-  const [members, workers, attendance] = await Promise.all([
+  // Fetch roster & attendance for specific Sunday, plus historical attendance for trend calculations
+  const [members, workers, attendance, allAttendance] = await Promise.all([
     db.collection("members").find({}, { projection: { _id: 0 } }).toArray(),
     db.collection("workers").find({}, { projection: { _id: 0 } }).toArray(),
-    db.collection("attendance").find({ date: dateStr }, { projection: { _id: 0 } }).toArray()
+    db.collection("attendance").find({ date: dateStr }, { projection: { _id: 0 } }).toArray(),
+    db.collection("attendance").find({}, { projection: { _id: 0 } }).toArray()
   ]);
 
   const totalMembers = members.length;
@@ -2655,6 +2656,103 @@ async function sendWeeklyEmailSummary(dateStr: string): Promise<{ success: boole
   const countTotalAbsent = countAbsentMembers + countAbsentWorkers;
 
   const attendancePercentage = totalRoster > 0 ? Math.round((countTotalPresent / totalRoster) * 100) : 0;
+
+  // Calculate Monthly Trends and Growth Percentages
+  let prevMonthLabel = "Previous Month";
+  let avgPrevMonth = 0;
+  let mostRecentSundayBeforeThis: string | null = null;
+  let prevWeekAttendance = 0;
+
+  try {
+    const currentDate = new Date(dateStr + "T00:00:00");
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth(); // 0-indexed
+
+    // Calculate previous month boundaries
+    let prevMonthYear = currentYear;
+    let prevMonth = currentMonth - 1;
+    if (prevMonth < 0) {
+      prevMonth = 11;
+      prevMonthYear -= 1;
+    }
+
+    const monthNames = [
+      "January", "February", "March", "April", "May", "June", 
+      "July", "August", "September", "October", "November", "December"
+    ];
+    const prevMonthName = monthNames[prevMonth];
+    prevMonthLabel = `${prevMonthName} ${prevMonthYear}`;
+
+    const prevMonthPrefix = `${prevMonthYear}-${String(prevMonth + 1).padStart(2, "0")}`;
+
+    const prevMonthDates = Array.from(new Set(
+      allAttendance
+        .filter((rec: any) => rec.date && rec.date.startsWith(prevMonthPrefix))
+        .map((rec: any) => rec.date as string)
+    )) as string[];
+
+    const countsPerDate = prevMonthDates.map((d: string) => {
+      return allAttendance.filter((rec: any) => rec.date === d).length;
+    });
+
+    avgPrevMonth = countsPerDate.length > 0
+      ? countsPerDate.reduce((sum, count) => sum + count, 0) / countsPerDate.length
+      : 0;
+
+    const allUniqueDatesBeforeThis = Array.from(new Set(
+      allAttendance
+        .filter((rec: any) => rec.date && rec.date < dateStr)
+        .map((rec: any) => rec.date as string)
+    )).sort() as string[];
+
+    mostRecentSundayBeforeThis = allUniqueDatesBeforeThis.length > 0
+      ? (allUniqueDatesBeforeThis[allUniqueDatesBeforeThis.length - 1] as string)
+      : null;
+
+    prevWeekAttendance = mostRecentSundayBeforeThis
+      ? allAttendance.filter((rec: any) => rec.date === mostRecentSundayBeforeThis).length
+      : 0;
+  } catch (err) {
+    console.error("Error calculating statistical trend highlights in email reporter:", err);
+  }
+
+  // Monthly trend comparison
+  let monthlyGrowthText = "N/A";
+  let monthlyGrowthSign = "";
+  let monthlyGrowthColor = "#64748b"; // Neutral Gray
+  if (avgPrevMonth > 0) {
+    const change = Math.round(((countTotalPresent - avgPrevMonth) / avgPrevMonth) * 100);
+    monthlyGrowthText = `${Math.abs(change)}%`;
+    if (change > 0) {
+      monthlyGrowthSign = "▲ +";
+      monthlyGrowthColor = "#059669"; // Emerald
+    } else if (change < 0) {
+      monthlyGrowthSign = "▼ -";
+      monthlyGrowthColor = "#dc2626"; // Red
+    } else {
+      monthlyGrowthSign = "— ";
+      monthlyGrowthColor = "#4b5563"; // Slate
+    }
+  }
+
+  // Week-over-week trend comparison
+  let weeklyGrowthText = "N/A";
+  let weeklyGrowthSign = "";
+  let weeklyGrowthColor = "#64748b";
+  if (mostRecentSundayBeforeThis && prevWeekAttendance > 0) {
+    const change = Math.round(((countTotalPresent - prevWeekAttendance) / prevWeekAttendance) * 100);
+    weeklyGrowthText = `${Math.abs(change)}%`;
+    if (change > 0) {
+      weeklyGrowthSign = "▲ +";
+      weeklyGrowthColor = "#059669";
+    } else if (change < 0) {
+      weeklyGrowthSign = "▼ -";
+      weeklyGrowthColor = "#dc2626";
+    } else {
+      weeklyGrowthSign = "— ";
+      weeklyGrowthColor = "#4b5563";
+    }
+  }
 
   // Breakdown by event/service
   const eventBreakdown: Record<string, number> = {};
@@ -2756,6 +2854,38 @@ async function sendWeeklyEmailSummary(dateStr: string): Promise<{ success: boole
             <div style="text-align: right; font-size: 12px; font-weight: bold; color: #059669;">
                Attendance Rate: ${attendancePercentage}%
             </div>
+          </div>
+
+          <!-- Attendance Trend & Growth Summary -->
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 25px;">
+            <strong style="font-size: 14px; color: #0f172a; display: block; margin-bottom: 12px;">📈 Attendance Trends & Growth Metrics:</strong>
+            
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+              <tr>
+                <td style="padding: 6px 0; color: #475569; width: 60%;">Previous Month Weekly Average (${prevMonthLabel}):</td>
+                <td style="padding: 6px 0; font-weight: bold; color: #0f172a; text-align: right;">
+                  ${avgPrevMonth > 0 ? `${Math.round(avgPrevMonth)} present` : 'N/A (No previous month records)'}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #475569; font-weight: 500;">Month-over-Month Growth (vs. Prev. Month Avg.):</td>
+                <td style="padding: 6px 0; font-weight: bold; text-align: right; color: ${monthlyGrowthColor};">
+                  ${monthlyGrowthSign}${monthlyGrowthText}
+                </td>
+              </tr>
+              <tr style="border-top: 1px dashed #e2e8f0;">
+                <td style="padding: 8px 0 6px 0; color: #475569;">Previous Recorded Session (${mostRecentSundayBeforeThis || 'None'}):</td>
+                <td style="padding: 8px 0 6px 0; font-weight: bold; color: #0f172a; text-align: right;">
+                  ${prevWeekAttendance > 0 ? `${prevWeekAttendance} present` : 'N/A'}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0 0 0; color: #475569; font-weight: 500;">Week-over-Week Growth Trend:</td>
+                <td style="padding: 6px 0 0 0; font-weight: bold; text-align: right; color: ${weeklyGrowthColor};">
+                  ${weeklyGrowthSign}${weeklyGrowthText}
+                </td>
+              </tr>
+            </table>
           </div>
 
           <!-- Section: Breakdown by Event / Service -->
