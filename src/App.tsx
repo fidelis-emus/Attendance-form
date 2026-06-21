@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import * as XLSX from "xlsx";
 import {
   Users,
   Shield,
@@ -25,6 +26,7 @@ import {
   Lock,
   RefreshCw,
   Upload,
+  Smile,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -74,7 +76,7 @@ export default function App() {
 
   // Registers Selection
   const [registerSubTab, setRegisterSubTab] = useState<
-    "members" | "workers" | "history"
+    "members" | "children" | "workers" | "history"
   >("members");
 
   // Dashboard / Statistics Filtering states
@@ -91,10 +93,13 @@ export default function App() {
   const [stats, setStats] = useState<any>({
     totalMembers: 0,
     totalWorkers: 0,
+    totalChildren: 0,
     membersPresent: 0,
     workersPresent: 0,
+    childrenPresent: 0,
     absentMembers: 0,
     absentWorkers: 0,
+    absentChildren: 0,
     totalWAMessages: 0,
     deliveryStats: { Sent: 0, Delivered: 0, Read: 0, Failed: 0 },
     todaySunday: "",
@@ -577,24 +582,49 @@ export default function App() {
     }
   };
 
-  // Upload/import spreadsheet file as raw text
+  // Upload/import spreadsheet file as raw text or parsed Excel
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const fileExtension = file.name.split(".").pop()?.toLowerCase();
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result;
-      if (typeof text === "string") {
-        setImportRawText(text);
-        setImportFileError(null);
-        setImportResult(null);
-      }
-    };
-    reader.onerror = () => {
-      setImportFileError("Failed to read the selected file.");
-    };
-    reader.readAsText(file);
+
+    if (fileExtension === "xlsx" || fileExtension === "xls") {
+      reader.onload = (event) => {
+        try {
+          const data = new Uint8Array(event.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: "array" });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const csv = XLSX.utils.sheet_to_csv(worksheet);
+
+          setImportRawText(csv);
+          setImportFileError(null);
+          setImportResult(null);
+          addNotification(`Excel sheet "${file.name}" loaded successfully!`, "success");
+        } catch (err: any) {
+          setImportFileError(`Failed to parse Excel: ${err.message}`);
+        }
+      };
+      reader.onerror = () => {
+        setImportFileError("Failed to read the selected Excel file.");
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.onload = (event) => {
+        const text = event.target?.result;
+        if (typeof text === "string") {
+          setImportRawText(text);
+          setImportFileError(null);
+          setImportResult(null);
+        }
+      };
+      reader.onerror = () => {
+        setImportFileError("Failed to read the selected file.");
+      };
+      reader.readAsText(file);
+    }
   };
 
   // Process and POST raw CSV/TSV parsed attendees
@@ -749,7 +779,7 @@ export default function App() {
     if (selectedPersonIds.length === 0) return;
 
     const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : (sundaysList[0] || new Date().toISOString().split("T")[0]);
-    const personType = registerSubTab === "workers" ? "worker" : "member";
+    const personType = registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member";
 
     try {
       const response = await fetch("/api/attendance/batch-present", {
@@ -1164,10 +1194,6 @@ export default function App() {
   // Save or update Quick Reply Template
   const handleSaveQuickReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminRole === "Pastor") {
-      addNotification("Access Denied. Pastors cannot manage templates.", "error");
-      return;
-    }
 
     try {
       const response = await fetch("/api/quick-replies", {
@@ -1178,7 +1204,7 @@ export default function App() {
           title: quickReplyForm.title,
           content: quickReplyForm.content,
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid,
         }),
       });
 
@@ -1196,10 +1222,6 @@ export default function App() {
 
   // Delete Template
   const handleDeleteQuickReply = async (id: string, title: string) => {
-    if (adminRole === "Pastor") {
-      addNotification("Access Denied. Pastors cannot delete templates.", "error");
-      return;
-    }
     if (!window.confirm(`Are you sure you want to delete the template "${title}"?`)) return;
 
     try {
@@ -1208,7 +1230,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid,
         }),
       });
 
@@ -1845,6 +1867,12 @@ export default function App() {
     });
   };
 
+  const activeRawRosterList = registerSubTab === "workers"
+    ? workers
+    : registerSubTab === "children"
+    ? members.filter((m: any) => m.role === "chiden" || m.role === "children")
+    : members.filter((m: any) => m.role !== "chiden" && m.role !== "children");
+
   // Filter Attendance transactions history
   const getFilteredHistory = () => {
     return attendanceHistory.filter((record) => {
@@ -2307,7 +2335,7 @@ export default function App() {
               {adminTab === "dashboard" && (
                 <div className="space-y-6" id="dashboard-tab-panel">
                   {/* KPI Panels Grid */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 no-print">
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 no-print">
                     <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 sm:p-5 rounded-2xl shadow-sm flex items-center gap-4">
                       <div className="p-3 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-xl">
                         <Users size={22} />
@@ -2318,6 +2346,20 @@ export default function App() {
                         </span>
                         <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Total Members
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 sm:p-5 rounded-2xl shadow-sm flex items-center gap-4">
+                      <div className="p-3 bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 rounded-xl">
+                        <Smile size={22} />
+                      </div>
+                      <div>
+                        <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
+                          {stats.totalChildren || 0}
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                          Total Kids
                         </span>
                       </div>
                     </div>
@@ -2342,7 +2384,7 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {stats.membersPresent + stats.workersPresent || 0}
+                          {(stats.membersPresent || 0) + (stats.workersPresent || 0) + (stats.childrenPresent || 0)}
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Present Active Today
@@ -2356,7 +2398,7 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {stats.absentMembers + stats.absentWorkers || 0}
+                          {(stats.absentMembers || 0) + (stats.absentWorkers || 0) + (stats.absentChildren || 0)}
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Absent Today
@@ -2501,9 +2543,16 @@ export default function App() {
 
                     const compileMetrics = (prog: string) => {
                       const records = filteredRecordsForStats.filter((r: any) => r.eventType === prog);
-                      const mCount = records.filter((r: any) => String(r.personType || r.role || "").toLowerCase() === "member").length;
+                      const mCount = records.filter((r: any) => {
+                        const recRole = String(r.personType || r.role || "").toLowerCase();
+                        return recRole === "member";
+                      }).length;
                       const wCount = records.filter((r: any) => String(r.personType || r.role || "").toLowerCase() === "worker").length;
-                      return { total: records.length, members: mCount, workers: wCount };
+                      const cCount = records.filter((r: any) => {
+                        const recRole = String(r.personType || r.role || "").toLowerCase();
+                        return recRole === "chiden" || recRole === "children";
+                      }).length;
+                      return { total: records.length, members: mCount, workers: wCount, children: cCount };
                     };
 
                     const sExp = compileMetrics("Sunday Experience");
@@ -2525,30 +2574,39 @@ export default function App() {
                             <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{sExp.total}</span>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3 text-center">
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
-                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{sExp.members}</span>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-sm sm:text-base font-black text-blue-600 dark:text-blue-400 font-display">{sExp.members}</span>
                             </div>
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
-                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{sExp.workers}</span>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Kids</span>
+                              <span className="text-sm sm:text-base font-black text-amber-600 dark:text-amber-400 font-display">{sExp.children}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-sm sm:text-base font-black text-violet-600 dark:text-violet-400 font-display">{sExp.workers}</span>
                             </div>
                           </div>
 
                           {/* Visual progress share bar */}
                           <div className="space-y-1">
                             <div className="flex justify-between text-[10px] font-bold text-slate-400">
-                              <span>Members ({sExp.total > 0 ? Math.round((sExp.members / sExp.total) * 100) : 0}%)</span>
-                              <span>Workers ({sExp.total > 0 ? Math.round((sExp.workers / sExp.total) * 100) : 0}%)</span>
+                              <span>M ({sExp.total > 0 ? Math.round((sExp.members / sExp.total) * 100) : 0}%)</span>
+                              <span>K ({sExp.total > 0 ? Math.round((sExp.children / sExp.total) * 100) : 0}%)</span>
+                              <span>W ({sExp.total > 0 ? Math.round((sExp.workers / sExp.total) * 100) : 0}%)</span>
                             </div>
                             <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
                               <div 
-                                style={{ width: `${sExp.total > 0 ? (sExp.members / sExp.total) * 100 : 50}%` }} 
+                                style={{ width: `${sExp.total > 0 ? (sExp.members / sExp.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-blue-500" 
                               />
                               <div 
-                                style={{ width: `${sExp.total > 0 ? (sExp.workers / sExp.total) * 100 : 50}%` }} 
+                                style={{ width: `${sExp.total > 0 ? (sExp.children / sExp.total) * 100 : 33.3}%` }} 
+                                className="h-full bg-amber-500" 
+                              />
+                              <div 
+                                style={{ width: `${sExp.total > 0 ? (sExp.workers / sExp.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-violet-500" 
                               />
                             </div>
@@ -2568,30 +2626,39 @@ export default function App() {
                             <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{wCafe.total}</span>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3 text-center">
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
-                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{wCafe.members}</span>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-sm sm:text-base font-black text-blue-600 dark:text-blue-400 font-display">{wCafe.members}</span>
                             </div>
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
-                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{wCafe.workers}</span>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Kids</span>
+                              <span className="text-sm sm:text-base font-black text-amber-600 dark:text-amber-400 font-display">{wCafe.children}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-sm sm:text-base font-black text-violet-600 dark:text-violet-400 font-display">{wCafe.workers}</span>
                             </div>
                           </div>
 
                           {/* Visual progress share bar */}
                           <div className="space-y-1">
                             <div className="flex justify-between text-[10px] font-bold text-slate-400">
-                              <span>Members ({wCafe.total > 0 ? Math.round((wCafe.members / wCafe.total) * 100) : 0}%)</span>
-                              <span>Workers ({wCafe.total > 0 ? Math.round((wCafe.workers / wCafe.total) * 100) : 0}%)</span>
+                              <span>M ({wCafe.total > 0 ? Math.round((wCafe.members / wCafe.total) * 100) : 0}%)</span>
+                              <span>K ({wCafe.total > 0 ? Math.round((wCafe.children / wCafe.total) * 100) : 0}%)</span>
+                              <span>W ({wCafe.total > 0 ? Math.round((wCafe.workers / wCafe.total) * 100) : 0}%)</span>
                             </div>
                             <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
                               <div 
-                                style={{ width: `${wCafe.total > 0 ? (wCafe.members / wCafe.total) * 100 : 50}%` }} 
+                                style={{ width: `${wCafe.total > 0 ? (wCafe.members / wCafe.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-blue-500" 
                               />
                               <div 
-                                style={{ width: `${wCafe.total > 0 ? (wCafe.workers / wCafe.total) * 100 : 50}%` }} 
+                                style={{ width: `${wCafe.total > 0 ? (wCafe.children / wCafe.total) * 100 : 33.3}%` }} 
+                                className="h-full bg-amber-500" 
+                              />
+                              <div 
+                                style={{ width: `${wCafe.total > 0 ? (wCafe.workers / wCafe.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-violet-500" 
                               />
                             </div>
@@ -2611,30 +2678,39 @@ export default function App() {
                             <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-display">{sProg.total}</span>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3 text-center">
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Members</span>
-                              <span className="text-lg font-black text-blue-600 dark:text-blue-400 font-display">{sProg.members}</span>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Members</span>
+                              <span className="text-sm sm:text-base font-black text-blue-600 dark:text-blue-400 font-display">{sProg.members}</span>
                             </div>
-                            <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-850">
-                              <span className="block text-xs text-slate-400 font-bold uppercase tracking-wider">Workers</span>
-                              <span className="text-lg font-black text-violet-600 dark:text-violet-400 font-display">{sProg.workers}</span>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Kids</span>
+                              <span className="text-sm sm:text-base font-black text-amber-600 dark:text-amber-400 font-display">{sProg.children}</span>
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-950 p-2 rounded-xl border border-slate-100 dark:border-slate-850">
+                              <span className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Workers</span>
+                              <span className="text-sm sm:text-base font-black text-violet-600 dark:text-violet-400 font-display">{sProg.workers}</span>
                             </div>
                           </div>
 
                           {/* Visual progress share bar */}
                           <div className="space-y-1">
                             <div className="flex justify-between text-[10px] font-bold text-slate-400">
-                              <span>Members ({sProg.total > 0 ? Math.round((sProg.members / sProg.total) * 100) : 0}%)</span>
-                              <span>Workers ({sProg.total > 0 ? Math.round((sProg.workers / sProg.total) * 105 ? 100 : 0) : 0}%)</span>
+                              <span>M ({sProg.total > 0 ? Math.round((sProg.members / sProg.total) * 100) : 0}%)</span>
+                              <span>K ({sProg.total > 0 ? Math.round((sProg.children / sProg.total) * 100) : 0}%)</span>
+                              <span>W ({sProg.total > 0 ? Math.round((sProg.workers / sProg.total) * 100) : 0}%)</span>
                             </div>
                             <div className="w-full h-2 bg-slate-100 dark:bg-slate-950 rounded-full overflow-hidden flex">
                               <div 
-                                style={{ width: `${sProg.total > 0 ? (sProg.members / sProg.total) * 100 : 50}%` }} 
+                                style={{ width: `${sProg.total > 0 ? (sProg.members / sProg.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-blue-500" 
                               />
                               <div 
-                                style={{ width: `${sProg.total > 0 ? (sProg.workers / sProg.total) * 100 : 50}%` }} 
+                                style={{ width: `${sProg.total > 0 ? (sProg.children / sProg.total) * 100 : 33.3}%` }} 
+                                className="h-full bg-amber-500" 
+                              />
+                              <div 
+                                style={{ width: `${sProg.total > 0 ? (sProg.workers / sProg.total) * 100 : 33.3}%` }} 
                                 className="h-full bg-violet-500" 
                               />
                             </div>
@@ -2836,7 +2912,21 @@ export default function App() {
                             : "text-slate-500 hover:text-slate-700"
                         }`}
                       >
-                        Members Database ({members.length})
+                        Members Database ({members.filter(m => m.role !== "chiden" && m.role !== "children").length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRegisterSubTab("children");
+                          setSearchQuery("");
+                        }}
+                        className={`text-xs font-bold py-2 px-4 rounded-lg transform transition-all cursor-pointer ${
+                          registerSubTab === "children"
+                            ? "bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-sm"
+                            : "text-slate-500 hover:text-slate-700"
+                        }`}
+                      >
+                        Children Dept ({members.filter(m => m.role === "chiden" || m.role === "children").length})
                       </button>
                       <button
                         type="button"
@@ -2873,7 +2963,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setNewPersonType(
-                            registerSubTab === "workers" ? "worker" : "member",
+                            registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member",
                           );
                           setShowAddPersonModal(true);
                         }}
@@ -2922,7 +3012,11 @@ export default function App() {
                             id="export-roster-excel-btn"
                             onClick={() => {
                               const list =
-                                registerSubTab === "workers" ? workers : members;
+                                registerSubTab === "workers" 
+                                  ? workers 
+                                  : registerSubTab === "children" 
+                                  ? members.filter((m: any) => m.role === "chiden" || m.role === "children") 
+                                  : members.filter((m: any) => m.role !== "chiden" && m.role !== "children");
                               const filtered = getFilteredPersons(list);
                               const rows = filtered.map((item) => [
                                 `${item.firstName} ${item.lastName}`,
@@ -3108,7 +3202,7 @@ export default function App() {
                             ⚡ Batch Check-In Controls
                           </span>
                           <p className="text-xs font-semibold text-slate-800 dark:text-slate-100 mt-0.5">
-                            Selected <span className="text-blue-600 dark:text-blue-400 font-bold underline font-mono">{selectedPersonIds.length}</span> {registerSubTab === "workers" ? "workers" : "members"} for batch update.
+                            Selected <span className="text-blue-600 dark:text-blue-400 font-bold underline font-mono">{selectedPersonIds.length}</span> {registerSubTab === "workers" ? "workers" : registerSubTab === "children" ? "children" : "members"} for batch update.
                           </p>
                         </div>
                       </div>
@@ -3316,16 +3410,12 @@ export default function App() {
                       <>
                         {/* Mobile Cards View for Roster List (< 768px) */}
                         <div className="grid grid-cols-1 gap-4 p-4 md:hidden">
-                          {getFilteredPersons(
-                            registerSubTab === "workers" ? workers : members,
-                          ).length === 0 ? (
+                          {getFilteredPersons(activeRawRosterList).length === 0 ? (
                             <div className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed">
                               Roster is currently empty. Define records using the Add Person wizard.
                             </div>
                           ) : (
-                            getFilteredPersons(
-                              registerSubTab === "workers" ? workers : members,
-                            ).map((person) => {
+                            getFilteredPersons(activeRawRosterList).map((person) => {
                               const isPresent = sundayFilter === "all"
                                 ? person.currentStatus === "Present"
                                 : attendanceHistory.some(rec => rec.personId === person.id && rec.date === sundayFilter);
@@ -3377,7 +3467,7 @@ export default function App() {
                                         type="button"
                                         onClick={() => {
                                           setSelectedDetailsPerson(person);
-                                          setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : "member");
+                                          setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
                                         }}
                                         className="font-bold text-slate-800 dark:text-slate-100 text-left hover:text-blue-600 dark:hover:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer focus:outline-none"
                                         title="View detailed attendance history & timeline"
@@ -3444,7 +3534,7 @@ export default function App() {
                                       
                                       <button
                                         type="button"
-                                        onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : "member")}
+                                        onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member")}
                                         className="p-1 px-2 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer text-[10px] font-bold border border-slate-200 dark:border-slate-800 shadow-xs"
                                         disabled={adminRole === "Pastor"}
                                       >
@@ -3467,8 +3557,8 @@ export default function App() {
 
                                       <button
                                         type="button"
-                                        onClick={() => handleDeletePerson(person.id, registerSubTab === "workers" ? "worker" : "member")}
-                                        className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/25 rounded-md cursor-pointer transition-colors border border-transparent hover:border-rose-100 dark:hover:border-rose-950/30"
+                                        onClick={() => handleDeletePerson(person.id, registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member")}
+                                        className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-955/25 rounded-md cursor-pointer transition-colors border border-transparent hover:border-rose-100 dark:hover:border-rose-950/30"
                                         title="Delete check records"
                                       >
                                         <Trash2 size={13} />
@@ -3492,13 +3582,13 @@ export default function App() {
                                     type="checkbox"
                                     className="rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-blue-600 focus:ring-blue-500 cursor-pointer h-4 w-4"
                                     checked={
-                                      getFilteredPersons(registerSubTab === "workers" ? workers : members).length > 0 &&
-                                      getFilteredPersons(registerSubTab === "workers" ? workers : members).every((p) =>
+                                      getFilteredPersons(activeRawRosterList).length > 0 &&
+                                      getFilteredPersons(activeRawRosterList).every((p) =>
                                         selectedPersonIds.includes(p.id)
                                       )
                                     }
                                     onChange={(e) => {
-                                      const currentList = getFilteredPersons(registerSubTab === "workers" ? workers : members);
+                                      const currentList = getFilteredPersons(activeRawRosterList);
                                       if (e.target.checked) {
                                         setSelectedPersonIds((prev) => {
                                           const next = [...prev];
@@ -3535,7 +3625,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {getFilteredPersons(
-                              registerSubTab === "workers" ? workers : members,
+                              activeRawRosterList,
                             ).length === 0 ? (
                               <tr>
                                 <td
@@ -3548,9 +3638,7 @@ export default function App() {
                               </tr>
                             ) : (
                               getFilteredPersons(
-                                registerSubTab === "workers"
-                                  ? workers
-                                  : members,
+                                activeRawRosterList,
                               ).map((person) => (
                                 <tr
                                   key={person.id}
@@ -3577,7 +3665,7 @@ export default function App() {
                                       type="button"
                                       onClick={() => {
                                         setSelectedDetailsPerson(person);
-                                        setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : "member");
+                                        setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
                                       }}
                                       className="hover:text-blue-600 dark:hover:text-blue-400 hover:underline text-left cursor-pointer transition-all flex items-center gap-1.5 focus:outline-none"
                                       title="View detailed attendance history & timeline"
@@ -3639,7 +3727,7 @@ export default function App() {
                                           </span>
                                           <button
                                             type="button"
-                                            onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : "member")}
+                                            onClick={() => handleToggleAttendance(person.id, registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member")}
                                             className="p-1 px-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors cursor-pointer select-none text-[10px] font-bold border border-slate-200 dark:border-slate-800 shadow-xs"
                                             title={`Toggle attendance state for ${sundayFilter === "all" ? "current Sunday" : sundayFilter}`}
                                             disabled={adminRole === "Pastor"}
@@ -3711,7 +3799,9 @@ export default function App() {
                                             person.id,
                                             registerSubTab === "workers"
                                               ? "worker"
-                                              : "member",
+                                              : registerSubTab === "children"
+                                                ? "children"
+                                                : "member",
                                           )
                                         }
                                         className="p-1 px-2 text-rose-600 dark:text-rose-455 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg cursor-pointer"
@@ -4619,18 +4709,16 @@ export default function App() {
                           <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-widest pl-1">
                             📚 Template Library ({quickReplies.length})
                           </h3>
-                          {adminRole !== "Pastor" && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setQuickReplyForm({ id: "", title: "", content: "" });
-                                setShowAddQuickReplyModal(true);
-                              }}
-                              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer shadow transition-colors"
-                            >
-                              Add Template ＋
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuickReplyForm({ id: "", title: "", content: "" });
+                              setShowAddQuickReplyModal(true);
+                            }}
+                            className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer shadow transition-colors"
+                          >
+                            Add Template ＋
+                          </button>
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[450px] overflow-y-auto pr-1">
@@ -4647,27 +4735,25 @@ export default function App() {
                               </div>
 
                               <div className="pt-2 border-t border-slate-50 dark:border-slate-850 flex items-center justify-end gap-2 text-[10px]">
-                                {adminRole !== "Pastor" && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setQuickReplyForm({ id: qr.id, title: qr.title, content: qr.content });
-                                        setShowAddQuickReplyModal(true);
-                                      }}
-                                      className="py-1 px-2.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 rounded font-bold cursor-pointer"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteQuickReply(qr.id, qr.title)}
-                                      className="py-1 px-2.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded font-bold cursor-pointer"
-                                    >
-                                      Delete
-                                    </button>
-                                  </>
-                                )}
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setQuickReplyForm({ id: qr.id, title: qr.title, content: qr.content });
+                                      setShowAddQuickReplyModal(true);
+                                    }}
+                                    className="py-1 px-2.5 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/20 rounded font-bold cursor-pointer"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteQuickReply(qr.id, qr.title)}
+                                    className="py-1 px-2.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded font-bold cursor-pointer"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
                               </div>
                             </div>
                           ))}
@@ -5907,7 +5993,7 @@ export default function App() {
                     </span>
                     <button
                       onClick={() => setShowImportModal(false)}
-                      className="text-emerald-200 hover:text-white cursor-pointer select-none text-sm"
+                      className="text-emerald-250 hover:text-white cursor-pointer select-none text-sm font-semibold"
                     >
                       ✕ Close
                     </button>
@@ -5915,11 +6001,11 @@ export default function App() {
                   <form onSubmit={handleImportSubmit} className="p-6 space-y-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                        Option 1: Choose a CSV / Excel Text File
+                        Option 1: Choose an Excel Spreadsheet (.xlsx, .xls) or CSV File
                       </label>
                       <input
                         type="file"
-                        accept=".csv,.tsv,.txt"
+                        accept=".csv,.tsv,.txt,.xlsx,.xls"
                         onChange={handleFileChange}
                         className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 dark:file:bg-emerald-950/30 file:text-emerald-700 dark:file:text-emerald-400 hover:file:bg-emerald-100 cursor-pointer"
                       />
@@ -5928,13 +6014,13 @@ export default function App() {
                     <div>
                       <div className="flex justify-between items-center mb-1">
                         <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
-                          Option 2: Paste Rows (CSV or Tab Delimited)
+                          Option 2: Paste Rows (CSV, Tab, or Excel Copy)
                         </label>
                         <button
                           type="button"
                           onClick={() => {
                             setImportRawText(
-                              "First Name,Last Name,WhatsApp Phone,Gender,Role,Date,Status\nJohn,Doe,+2348030001111,Male,member,2026-06-14,Present\nSarah,Smith,+2348030002222,Female,worker,2026-06-14,Present"
+                              "First Name,Last Name,WhatsApp Phone,Gender,Role,Date,Status\nJohn,Doe,+2348030001111,Male,member,2026-06-14,Present\nSarah,Smith,+2348030002222,Female,worker,2026-06-14,Present\nJimmy,Adams,+2348030004444,Male,children,2026-06-14,Present"
                             );
                           }}
                           className="text-[10px] text-blue-500 hover:underline"
@@ -5944,7 +6030,7 @@ export default function App() {
                       </div>
                       <textarea
                         rows={6}
-                        placeholder={`Format on each line: First Name, Last Name, WhatsApp, Gender, Role, Date, Status\n\nExample:\nJohn,Doe,+2348011223344,Male,member,2026-06-14,Present`}
+                        placeholder={`Format on each line: First Name, Last Name, WhatsApp, Gender, Role, Date, Status\n\nExample:\nJohn,Doe,+2348123456789,Male,member,2026-06-14,Present\nJimmy,Adams,+2348030004444,Male,children,2026-06-14,Present`}
                         value={importRawText}
                         onChange={(e) => setImportRawText(e.target.value)}
                         className="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-2xl text-slate-800 dark:text-slate-100 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
@@ -5955,7 +6041,7 @@ export default function App() {
                       <p className="font-bold text-slate-700 dark:text-slate-350 mb-0.5">ℹ️ Data Matching Rules:</p>
                       <ul className="list-disc pl-4 space-y-0.5">
                         <li>Duplicates are automatically merged based on <strong>WhatsApp Phone Number</strong>.</li>
-                        <li>Roles supported: <strong>member</strong> or <strong>worker</strong>.</li>
+                        <li>Roles supported: <strong>member</strong>, <strong>worker</strong>, or <strong>children</strong> (Children Department).</li>
                         <li>Genders supported: <strong>Male</strong> or <strong>Female</strong>.</li>
                         <li>Format: <strong>FirstName, LastName, Phone, Gender, Role, [Optional Sunday Date], [Optional Status]</strong></li>
                       </ul>
@@ -5986,6 +6072,69 @@ export default function App() {
                       ) : (
                         "Run Bulk Import"
                       )}
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* CREATE OR EDIT QUICK REPLY TEMPLATE MODAL */}
+            {showAddQuickReplyModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs no-print">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 rounded-3xl max-w-md w-full overflow-hidden shadow-2xl relative">
+                  <div className="py-4 px-6 bg-indigo-800 text-white font-display font-bold flex items-center justify-between">
+                    <span>{quickReplyForm.id ? "Edit WhatsApp Template" : "Add Message Template"}</span>
+                    <button
+                      onClick={() => {
+                        setShowAddQuickReplyModal(false);
+                        setQuickReplyForm({ id: "", title: "", content: "" });
+                      }}
+                      className="text-indigo-200 hover:text-white cursor-pointer select-none text-sm"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                  <form onSubmit={handleSaveQuickReply} className="p-6 space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Template Title
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="e.g. Wednesday Reminder"
+                        value={quickReplyForm.title}
+                        onChange={(e) =>
+                          setQuickReplyForm({ ...quickReplyForm, title: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Template Message Content
+                      </label>
+                      <textarea
+                        required
+                        rows={5}
+                        placeholder="Use {name} to represent recipient's full name dynamically."
+                        value={quickReplyForm.content}
+                        onChange={(e) =>
+                          setQuickReplyForm({ ...quickReplyForm, content: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans leading-relaxed"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-1 block">
+                        💡 Dynamic placeholder <strong>{`{name}`}</strong> will be automatically replaced with the recipient's actual name during transmission.
+                      </span>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-sm transition-all shadow cursor-pointer uppercase tracking-wider"
+                    >
+                      {quickReplyForm.id ? "Save Template Updates" : "Create New Template"}
                     </button>
                   </form>
                 </div>

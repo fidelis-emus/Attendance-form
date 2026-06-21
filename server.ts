@@ -951,14 +951,19 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
       }
 
       const genderOption = item.gender === "Male" || item.gender === "Female" ? item.gender : "";
-      const inputRole = item.role === "worker" ? "worker" : "member";
+      const inputRoleStr = String(item.role || "").toLowerCase().trim();
+      const inputRole = inputRoleStr === "worker" ? "worker" : ((inputRoleStr === "children" || inputRoleStr === "chiden" || inputRoleStr === "child" || inputRoleStr === "kid" || inputRoleStr === "kids") ? "chiden" : "member");
       const targetDate = item.date ? item.date.trim() : defaultSunday;
       const statusOption = item.currentStatus === "Absent" ? "Absent" : "Present";
 
       // 1. Seek existing registration in either collection
       let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
       let resolvedType = "member";
-      if (!existing) {
+      if (existing) {
+        if (existing.role === "chiden" || existing.role === "children") {
+          resolvedType = "chiden";
+        }
+      } else {
         existing = await db.collection("workers").findOne({ whatsAppNumber: phoneNum });
         if (existing) {
           resolvedType = "worker";
@@ -984,6 +989,7 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
           messageSent: false,
           messageSentDate: null,
           messageDeliveryStatus: null,
+          role: resolvedType === "worker" ? "Worker" : (resolvedType === "chiden" ? "chiden" : "Member"),
         });
         createdCount++;
       } else {
@@ -1238,17 +1244,21 @@ app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
       db.collection("whatsapp_logs").find({}, { projection: { _id: 0 } }).toArray(),
     ]);
 
-    const totalMembers = members.length;
+    const totalChildren = members.filter((m: any) => m.role === "chiden" || m.role === "children").length;
+    const totalMembers = members.filter((m: any) => m.role !== "chiden" && m.role !== "children").length;
     const totalWorkers = workers.length;
 
     let membersPresent = 0;
     let workersPresent = 0;
+    let childrenPresent = 0;
     let malePresent = 0;
     let femalePresent = 0;
 
     attendance.forEach((rec: any) => {
       if (rec.personType === "worker") {
         workersPresent++;
+      } else if (rec.personType === "chiden" || rec.personType === "children") {
+        childrenPresent++;
       } else {
         membersPresent++;
       }
@@ -1274,6 +1284,7 @@ app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
 
     const absentMembers = Math.max(0, totalMembers - membersPresent);
     const absentWorkers = Math.max(0, totalWorkers - workersPresent);
+    const absentChildren = Math.max(0, totalChildren - childrenPresent);
 
     const totalWAMessages = waLogs.length;
 
@@ -1294,10 +1305,13 @@ app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
     res.json({
       totalMembers,
       totalWorkers,
+      totalChildren,
       membersPresent,
       workersPresent,
+      childrenPresent,
       absentMembers,
       absentWorkers,
+      absentChildren,
       totalMale,
       totalFemale,
       malePresent,
