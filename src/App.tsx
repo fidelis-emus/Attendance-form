@@ -120,6 +120,18 @@ export default function App() {
     accessToken: "",
     businessAccountId: "",
   });
+  
+  const [baileysStatus, setBaileysStatus] = useState<{
+    status: "disconnected" | "connecting" | "qrcode" | "connected";
+    qrCodeDataUrl: string | null;
+    connectedNumber: string | null;
+    lastConnectedTime: string | null;
+  }>({
+    status: "disconnected",
+    qrCodeDataUrl: null,
+    connectedNumber: null,
+    lastConnectedTime: null,
+  });
   const [emailConfig, setEmailConfig] = useState<EmailSettings>({
     smtpHost: "",
     smtpPort: 587,
@@ -276,6 +288,54 @@ export default function App() {
       loadAllAdminData();
     }
   }, [user, adminRole]);
+
+  const fetchBaileysStatus = async () => {
+    try {
+      const res = await fetch("/api/whatsapp/status");
+      if (res.ok) {
+        const data = await res.json();
+        setBaileysStatus(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch Baileys status:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (user && adminRole && adminTab === "settings") {
+      fetchBaileysStatus();
+      const interval = setInterval(fetchBaileysStatus, 4000);
+      return () => clearInterval(interval);
+    }
+  }, [user, adminRole, adminTab]);
+
+  const handleBaileysReconnect = async () => {
+    try {
+      const res = await fetch("/api/whatsapp/reconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (res.ok) {
+        await fetchBaileysStatus();
+      }
+    } catch (err) {
+      console.error("Failed to trigger reconnect:", err);
+    }
+  };
+
+  const handleBaileysDisconnect = async () => {
+    try {
+      const res = await fetch("/api/whatsapp/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      if (res.ok) {
+        await fetchBaileysStatus();
+      }
+    } catch (err) {
+      console.error("Failed to trigger disconnect:", err);
+    }
+  };
 
   const toggleDarkMode = () => {
     const updated = !darkMode;
@@ -2427,7 +2487,7 @@ export default function App() {
                         : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
                     }`}
                   >
-                    ⚙️ Meta Configuration
+                    ⚙️ WhatsApp Settings
                   </button>
                   <button
                     type="button"
@@ -4990,6 +5050,113 @@ export default function App() {
                 >
                   {/* Meta edit settings form */}
                   <div className="lg:col-span-2 space-y-6">
+                    {/* Baileys WhatsApp Connection Manager */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 sm:p-8 rounded-2xl shadow-sm relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-1.5 h-full bg-emerald-500" />
+                      
+                      <div className="mb-6">
+                        <h3 className="text-lg font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 mb-1">
+                          🔌 WhatsApp Web Connection (Baileys)
+                        </h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400">
+                          Configure and check status for the church's direct WhatsApp Web session. Automated campaigns will be dispatched using this active connection.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Status detail */}
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-2xl">
+                            <span className="text-sm font-bold text-slate-600 dark:text-slate-400">Status:</span>
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                                baileysStatus.status === "connected" ? "bg-emerald-500 animate-pulse" :
+                                baileysStatus.status === "connecting" ? "bg-amber-500 animate-pulse" :
+                                baileysStatus.status === "qrcode" ? "bg-blue-500 animate-pulse" : "bg-rose-500"
+                              }`} />
+                              <span className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-205">
+                                {baileysStatus.status === "connected" ? "Connected" :
+                                 baileysStatus.status === "connecting" ? "Connecting..." :
+                                 baileysStatus.status === "qrcode" ? "Awaiting Scan" : "Disconnected"}
+                              </span>
+                            </div>
+                          </div>
+
+                          {baileysStatus.connectedNumber && (
+                            <div className="space-y-1">
+                              <span className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Connected Number JID:</span>
+                              <span className="block text-sm font-mono font-bold text-slate-800 dark:text-slate-100">{baileysStatus.connectedNumber}</span>
+                            </div>
+                          )}
+
+                          {baileysStatus.lastConnectedTime && (
+                            <div className="space-y-1">
+                              <span className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Last Online:</span>
+                              <span className="block text-xs text-slate-700 dark:text-slate-350 bg-slate-100 dark:bg-slate-950 px-2 py-1 rounded inline-block font-mono">
+                                {new Date(baileysStatus.lastConnectedTime).toLocaleString()}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-2 pt-2">
+                            <button
+                              type="button"
+                              onClick={handleBaileysReconnect}
+                              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer select-none"
+                            >
+                              {baileysStatus.status === "disconnected" ? "🔌 Connect Session" : "🔄 Reconnect Client"}
+                            </button>
+                            
+                            {(baileysStatus.status === "connected" || baileysStatus.status === "qrcode") && (
+                              <button
+                                type="button"
+                                onClick={handleBaileysDisconnect}
+                                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer select-none"
+                              >
+                                ❌ Disconnect Account
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Interactive QR image */}
+                        <div className="flex flex-col items-center justify-center p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-2xl">
+                          {baileysStatus.status === "qrcode" && baileysStatus.qrCodeDataUrl ? (
+                            <div className="text-center space-y-2">
+                              <span className="block text-[10px] font-extrabold text-indigo-500 uppercase tracking-wider animate-pulse">Scan to Link Device</span>
+                              <div className="p-2 bg-white border border-slate-200 rounded-xl inline-block shadow-sm">
+                                <img src={baileysStatus.qrCodeDataUrl} alt="WhatsApp Web QR Code" className="w-[140px] h-[140px] select-none pointer-events-none" />
+                              </div>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 max-w-xs leading-tight">
+                                Menu &gt; Linked Devices &gt; Link a Device.
+                              </p>
+                            </div>
+                          ) : baileysStatus.status === "connected" ? (
+                            <div className="text-center py-4 space-y-2">
+                              <span className="text-3xl">✅</span>
+                              <p className="text-xs font-bold text-slate-800 dark:text-slate-100">Automation Linked</p>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 max-w-xs">
+                                Session is persistent and will survive restarts.
+                              </p>
+                            </div>
+                          ) : baileysStatus.status === "connecting" ? (
+                            <div className="text-center py-6 space-y-2 animate-pulse">
+                              <span className="text-2xl">⏳</span>
+                              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Acquiring Websocket...</p>
+                            </div>
+                          ) : (
+                            <div className="text-center py-6 space-y-2 text-slate-400">
+                              <span className="text-2xl">🔌</span>
+                              <p className="text-[10px] font-bold uppercase tracking-wider">Client Offline</p>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-405 max-w-xs leading-normal">
+                                Click "Connect Session" to synchronize with WhatsApp.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-6 sm:p-8 rounded-2xl shadow-sm relative overflow-hidden">
                     <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500" />
 

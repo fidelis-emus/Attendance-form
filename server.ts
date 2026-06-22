@@ -6,6 +6,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import cron from "node-cron";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
+import { whatsappService } from "./whatsapp-service";
 
 dotenv.config();
 
@@ -1535,6 +1536,70 @@ app.post("/api/members", requireSubscription, async (req, res) => {
     const db = await getDb();
     await db.collection("members").insertOne(data);
 
+    // Automatically trigger First-Time Guest Follow-up via Baileys WhatsApp
+    if (data.whatsAppNumber) {
+      setTimeout(async () => {
+        try {
+          const welcomeMsg = `Dear ${data.firstName}, Welcome to House of Glory. We are delighted to have you worship with us. We pray that you experience God's love and power in every area of your life. God bless you.`;
+          const wamid = await whatsappService.sendMessage(data.whatsAppNumber, welcomeMsg);
+          
+          const now = new Date();
+          const dateSentStr = now.toISOString().split("T")[0];
+          const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+          await db.collection("whatsapp_logs").insertOne({
+            id: generateId(),
+            personId: id,
+            personName: `${data.firstName} ${data.lastName}`,
+            personType: "member",
+            whatsAppNumber: data.whatsAppNumber,
+            messageType: "First-Time Guest Welcome",
+            messageContent: welcomeMsg,
+            sentAt: now.toISOString(),
+            dateSent: dateSentStr,
+            timeSent: timeSentStr,
+            deliveryStatus: "Sent",
+            wamid
+          });
+
+          await db.collection("members").updateOne(
+            { id },
+            {
+              $set: {
+                messageSent: true,
+                messageSentDate: now.toISOString(),
+                messageDeliveryStatus: "Sent"
+              }
+            }
+          );
+          console.log(`Successfully sent First-Time Guest follow-up to ${data.firstName}`);
+        } catch (err: any) {
+          console.error(`Failed to send guest welcome message to ${data.firstName}:`, err.message);
+          
+          // Log failed welcome message
+          const now = new Date();
+          const dateSentStr = now.toISOString().split("T")[0];
+          const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+          
+          await db.collection("whatsapp_logs").insertOne({
+            id: generateId(),
+            personId: id,
+            personName: `${data.firstName} ${data.lastName}`,
+            personType: "member",
+            whatsAppNumber: data.whatsAppNumber,
+            messageType: "First-Time Guest Welcome",
+            messageContent: `Dear ${data.firstName}, Welcome to House of Glory. We are delighted to have you worship with us. We pray that you experience God's love and power in every area of your life. God bless you.`,
+            sentAt: now.toISOString(),
+            dateSent: dateSentStr,
+            timeSent: timeSentStr,
+            deliveryStatus: "Failed",
+            wamid: null,
+            error: err.message
+          });
+        }
+      }, 1000);
+    }
+
     await addAuditLog(
       adminId || "unknown",
       adminEmail || "admin@church.org",
@@ -1972,6 +2037,35 @@ app.get("/api/audit-logs", requireSubscription, async (req, res) => {
     const db = await getDb();
     const logs = await db.collection("audit_logs").find({}, { projection: { _id: 0 } }).sort({ timestamp: -1 }).toArray();
     res.json(logs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET WhatsApp Baileys connection status
+app.get("/api/whatsapp/status", requireSubscription, async (req, res) => {
+  try {
+    res.json(whatsappService.getStatus());
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST trigger Baileys reconnect
+app.post("/api/whatsapp/reconnect", requireSubscription, async (req, res) => {
+  try {
+    await whatsappService.connect();
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST trigger Baileys disconnect / logout
+app.post("/api/whatsapp/disconnect", requireSubscription, async (req, res) => {
+  try {
+    await whatsappService.disconnect();
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2727,33 +2821,10 @@ app.post("/api/whatsapp/trigger-wednesday", requireSubscription, async (req, res
   }
 });
 
-// Helper function: Send Meta API Request
+// Helper function: Send Baileys WhatsApp Request (formerly Meta Cloud API)
 async function sendWhatsAppMessage(config: any, toPhone: string, textBody: string) {
-  const cleanPhone = toPhone.trim().replace(/\+/g, "").replace(/\s/g, "");
-  const url = `https://graph.facebook.com/v18.0/${config.phoneNumberId}/messages`;
-  
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${config.accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      recipient_type: "individual",
-      to: cleanPhone,
-      type: "text",
-      text: {
-        body: textBody
-      }
-    })
-  });
-
-  const data = await response.json() as any;
-  if (!response.ok) {
-    throw new Error(data.error?.message || "Meta Cloud API response failure.");
-  }
-  return data;
+  const wamid = await whatsappService.sendMessage(toPhone, textBody);
+  return { messages: [{ id: wamid }] };
 }
 
 // Proxy stateless WhatsApp message request
@@ -3501,6 +3572,15 @@ async function startServer() {
   // Start Server on PORT 3000 and HOST 0.0.0.0
   app.listen(PORT, "0.0.0.0", async () => {
     console.log(`Church Attendance Management Server running on port ${PORT}`);
+    
+    // Initialize Baileys WhatsApp service
+    try {
+      await whatsappService.init();
+      console.log("[Startup] WhatsApp Baileys service initialized successfully!");
+    } catch (waErr: any) {
+      console.error("[Startup] Failed to initialize WhatsApp Baileys service:", waErr.message);
+    }
+
     // Run initial calculation check & populate on server startup
     try {
       await ensureMonthlySundaysInserted();
