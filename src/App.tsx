@@ -187,6 +187,7 @@ export default function App() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [importRawText, setImportRawText] = useState("");
   const [backdateImportDate, setBackdateImportDate] = useState("");
+  const [importTargetRole, setImportTargetRole] = useState<"member" | "children" | "worker" | "auto">("auto");
   const [importFileError, setImportFileError] = useState<string | null>(null);
   const [importingStatus, setImportingStatus] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -684,6 +685,7 @@ export default function App() {
           adminEmail: user?.email,
           adminId: user?.uid,
           overrideDate: backdateImportDate || null,
+          forcedRole: importTargetRole,
         }),
       });
 
@@ -6120,6 +6122,40 @@ export default function App() {
                       />
                       <p className="text-[10px] text-slate-500 dark:text-slate-400">
                         If supplied, this date is saved for all records instead of date columns in the sheet.
+                      </p>
+                    </div>
+
+                    {/* Target Group/Role Selection */}
+                    <div className="bg-slate-50 dark:bg-slate-955 p-3.5 rounded-2xl border border-slate-150 dark:border-slate-850 space-y-2 mb-1">
+                      <label className="block text-[11px] font-bold text-slate-755 dark:text-slate-300 uppercase tracking-wider">
+                        👥 Import Target Department / Roster
+                      </label>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[
+                          { id: "auto", label: "Auto-detect" },
+                          { id: "member", label: "Members Only" },
+                          { id: "children", label: "Children Only" },
+                          { id: "worker", label: "Workers Only" },
+                        ].map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setImportTargetRole(opt.id as any)}
+                            className={`px-1.5 py-2 rounded-xl text-[10px] font-bold transition-all border text-center cursor-pointer ${
+                              importTargetRole === opt.id
+                                ? "bg-emerald-600 border-emerald-600 text-white shadow-xs"
+                                : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100/50"
+                            }`}
+                          >
+                            <span className="block">{opt.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[9.5px] text-slate-500 dark:text-slate-400 leading-normal">
+                        {importTargetRole === "auto" && "💡 Reads the 'Role' column from the file (or defaults to Member for newcomers)."}
+                        {importTargetRole === "member" && "👤 Forces all imported attendees into the standard 'Members' roster column."}
+                        {importTargetRole === "children" && "🧒 Forces all imported attendees into the 'Children' roster column."}
+                        {importTargetRole === "worker" && "👷 Forces all imported attendees into the 'Workers' roster column."}
                       </p>
                     </div>
 

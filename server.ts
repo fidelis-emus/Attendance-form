@@ -928,7 +928,7 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
 // Bulk Attendance Import Endpoint
 app.post("/api/attendance/import", requireSubscription, async (req, res) => {
   try {
-    const { attendees, adminEmail, adminId, overrideDate } = req.body;
+    const { attendees, adminEmail, adminId, overrideDate, forcedRole } = req.body;
     if (!attendees || !Array.isArray(attendees)) {
       return res.status(400).json({ error: "Missing attendees array" });
     }
@@ -938,6 +938,11 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
 
     let createdCount = 0;
     let attendanceCount = 0;
+
+    let mappedForcedRole = "";
+    if (forcedRole && forcedRole !== "auto") {
+      mappedForcedRole = forcedRole === "children" ? "chiden" : forcedRole;
+    }
 
     for (const item of attendees) {
       if (!item.firstName || !item.lastName || !item.whatsAppNumber) {
@@ -952,7 +957,7 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
 
       const genderOption = item.gender === "Male" || item.gender === "Female" ? item.gender : "";
       const inputRoleStr = String(item.role || "").toLowerCase().trim();
-      const inputRole = inputRoleStr === "worker" ? "worker" : ((inputRoleStr === "children" || inputRoleStr === "chiden" || inputRoleStr === "child" || inputRoleStr === "kid" || inputRoleStr === "kids") ? "chiden" : "member");
+      const inputRole = mappedForcedRole ? mappedForcedRole : (inputRoleStr === "worker" ? "worker" : ((inputRoleStr === "children" || inputRoleStr === "chiden" || inputRoleStr === "child" || inputRoleStr === "kid" || inputRoleStr === "kids") ? "chiden" : "member"));
       const targetDate = (overrideDate && overrideDate.trim()) ? overrideDate.trim() : (item.date ? item.date.trim() : defaultSunday);
       const statusOption = item.currentStatus === "Absent" ? "Absent" : "Present";
 
@@ -969,16 +974,30 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
       }
 
       // 1. Seek existing registration in either collection
-      let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
+      let existingInMembers = await db.collection("members").findOne({ whatsAppNumber: phoneNum });
+      let existingInWorkers = await db.collection("workers").findOne({ whatsAppNumber: phoneNum });
+      let existing = existingInMembers || existingInWorkers;
+      let existingCollection = existingInMembers ? "members" : (existingInWorkers ? "workers" : null);
+
       let resolvedType = "member";
       if (existing) {
-        if (existing.role === "chiden" || existing.role === "children") {
-          resolvedType = "chiden";
-        }
-      } else {
-        existing = await db.collection("workers").findOne({ whatsAppNumber: phoneNum });
-        if (existing) {
+        if (existingInMembers) {
+          resolvedType = (existingInMembers.role === "chiden" || existingInMembers.role === "children") ? "chiden" : "member";
+        } else {
           resolvedType = "worker";
+        }
+      }
+
+      // If we are forcing a role and the existing collection doesn't match, we need to cross-migrate the record
+      if (mappedForcedRole && existing && existingCollection) {
+        const expectedCollection = mappedForcedRole === "worker" ? "workers" : "members";
+        if (existingCollection !== expectedCollection) {
+          // Delete from old collection
+          await db.collection(existingCollection).deleteOne({ id: existing.id });
+          // Clear so it inserts into the new one below
+          existing = null;
+          existingCollection = null;
+          resolvedType = mappedForcedRole;
         }
       }
 
@@ -1006,7 +1025,7 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
         createdCount++;
       } else {
         personId = existing.id;
-        // Update details (e.g. gender if missing, last attendance date if newer)
+        resolvedType = mappedForcedRole ? mappedForcedRole : resolvedType;
         const collectionName = resolvedType === "worker" ? "workers" : "members";
         const updateFields: any = {};
         if (!existing.gender && genderOption) {
@@ -1015,6 +1034,10 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
         if (statusOption === "Present") {
           updateFields.currentStatus = "Present";
           updateFields.lastAttendanceDate = targetDate;
+        }
+        // Force the role update on existing if they are in the same collection but different role classification
+        if (mappedForcedRole) {
+          updateFields.role = mappedForcedRole === "worker" ? "Worker" : (mappedForcedRole === "chiden" ? "chiden" : "Member");
         }
         if (Object.keys(updateFields).length > 0) {
           await db.collection(collectionName).updateOne({ id: personId }, { $set: updateFields });
