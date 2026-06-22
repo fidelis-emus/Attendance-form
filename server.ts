@@ -928,7 +928,7 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
 // Bulk Attendance Import Endpoint
 app.post("/api/attendance/import", requireSubscription, async (req, res) => {
   try {
-    const { attendees, adminEmail, adminId } = req.body;
+    const { attendees, adminEmail, adminId, overrideDate } = req.body;
     if (!attendees || !Array.isArray(attendees)) {
       return res.status(400).json({ error: "Missing attendees array" });
     }
@@ -953,8 +953,20 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
       const genderOption = item.gender === "Male" || item.gender === "Female" ? item.gender : "";
       const inputRoleStr = String(item.role || "").toLowerCase().trim();
       const inputRole = inputRoleStr === "worker" ? "worker" : ((inputRoleStr === "children" || inputRoleStr === "chiden" || inputRoleStr === "child" || inputRoleStr === "kid" || inputRoleStr === "kids") ? "chiden" : "member");
-      const targetDate = item.date ? item.date.trim() : defaultSunday;
+      const targetDate = (overrideDate && overrideDate.trim()) ? overrideDate.trim() : (item.date ? item.date.trim() : defaultSunday);
       const statusOption = item.currentStatus === "Absent" ? "Absent" : "Present";
+
+      // Auto register the Sunday if it is not present
+      const checkSun = await db.collection("sundays").findOne({ date: targetDate });
+      if (!checkSun) {
+        await db.collection("sundays").insertOne({
+          id: generateId(),
+          date: targetDate,
+          isCustom: true,
+          label: `Backdated Session: ${targetDate}`,
+          timestamp: new Date().toISOString()
+        });
+      }
 
       // 1. Seek existing registration in either collection
       let existing = await db.collection("members").findOne({ whatsAppNumber: phoneNum });

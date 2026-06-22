@@ -186,6 +186,7 @@ export default function App() {
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [importRawText, setImportRawText] = useState("");
+  const [backdateImportDate, setBackdateImportDate] = useState("");
   const [importFileError, setImportFileError] = useState<string | null>(null);
   const [importingStatus, setImportingStatus] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -682,6 +683,7 @@ export default function App() {
           attendees: parsedAttendees,
           adminEmail: user?.email,
           adminId: user?.uid,
+          overrideDate: backdateImportDate || null,
         }),
       });
 
@@ -1836,6 +1838,52 @@ export default function App() {
       });
     } catch {
       return dStr;
+    }
+  };
+
+  const getConsecutiveAbsences = (personId: string, fromDateStr: string, history: any[], sundays: string[]) => {
+    // Collect all unique chronological Sunday dates, sorted descending (newest first)
+    const sortedSundays = Array.from(new Set(sundays)).sort().reverse();
+    let startIdx = 0;
+    if (fromDateStr !== "all") {
+      startIdx = sortedSundays.indexOf(fromDateStr);
+    }
+    if (startIdx === -1) return 0;
+    
+    let absentCount = 0;
+    for (let i = startIdx; i < sortedSundays.length; i++) {
+      const sunDate = sortedSundays[i];
+      const wasPresent = history.some(h => h.personId === personId && h.date === sunDate);
+      if (!wasPresent) {
+        absentCount++;
+      } else {
+        break;
+      }
+    }
+    return absentCount;
+  };
+
+  const handleUpdatePersonNotes = async (personId: string, notes: string, personType: string) => {
+    try {
+      const endpoint = personType === "worker" ? `/api/workers/${personId}` : `/api/members/${personId}`;
+      const response = await fetch(endpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      });
+      if (response.ok) {
+        if (personType === "worker") {
+          setWorkers(prev => prev.map(w => w.id === personId ? { ...w, notes } : w));
+        } else {
+          setMembers(prev => prev.map(m => m.id === personId ? { ...m, notes } : m));
+        }
+        addNotification("Follow-up note updated successfully!", "success");
+      } else {
+        const data = await response.json();
+        throw new Error(data.error || "Failed to update note");
+      }
+    } catch (err: any) {
+      addNotification("Error updating follow-up note: " + err.message, "error");
     }
   };
 
@@ -3661,25 +3709,85 @@ export default function App() {
                                     </td>
                                   )}
                                   <td className="py-3 px-4 font-bold text-slate-800 dark:text-slate-100">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setSelectedDetailsPerson(person);
-                                        setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
-                                      }}
-                                      className="hover:text-blue-600 dark:hover:text-blue-400 hover:underline text-left cursor-pointer transition-all flex items-center gap-1.5 focus:outline-none"
-                                      title="View detailed attendance history & timeline"
-                                    >
-                                      <span>{person.firstName} {person.lastName}</span>
-                                      {person.role === "chiden" && (
-                                        <span className="text-[9px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-955/20 border border-amber-200/40 select-none" title="Children Department">
-                                          🧒 Children
-                                        </span>
-                                      )}
-                                      <span className="text-[10px] text-blue-500 font-normal no-underline px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40">
-                                        profile 👤
-                                      </span>
-                                    </button>
+                                    {(() => {
+                                      const isPresent = sundayFilter === "all"
+                                        ? person.currentStatus === "Present"
+                                        : attendanceHistory.some(rec => rec.personId === person.id && rec.date === sundayFilter);
+                                      const consecutiveCount = isPresent ? 0 : getConsecutiveAbsences(person.id, sundayFilter, attendanceHistory, sundaysList);
+
+                                      return (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedDetailsPerson(person);
+                                              setSelectedDetailsPersonType(registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
+                                            }}
+                                            className="hover:text-blue-600 dark:hover:text-blue-400 hover:underline text-left cursor-pointer transition-all flex items-center gap-1.5 focus:outline-none"
+                                            title="View detailed attendance history & timeline"
+                                          >
+                                            <span>{person.firstName} {person.lastName}</span>
+                                            {person.role === "chiden" && (
+                                              <span className="text-[9px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-955/20 border border-amber-200/40 select-none" title="Children Department">
+                                                🧒 Children
+                                              </span>
+                                            )}
+                                            <span className="text-[10px] text-blue-500 font-normal no-underline px-1 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/40 font-mono">
+                                              profile 👤
+                                            </span>
+                                          </button>
+
+                                          {/* Absentee details display under name */}
+                                          {!isPresent && (
+                                            <div className="mt-2.5 p-3.5 bg-rose-50/50 dark:bg-rose-950/15 border border-rose-100 dark:border-rose-900/40 rounded-2xl space-y-2 w-[280px] font-normal" onClick={(e) => e.stopPropagation()}>
+                                              <div className="flex justify-between items-center text-[10px] font-bold text-rose-700 dark:text-rose-400">
+                                                <span className="flex items-center gap-1">🚨 ABSENTEE INSIGHT</span>
+                                                <span className="bg-rose-100 dark:bg-rose-900/50 px-2 py-0.5 rounded font-mono text-[9px] text-rose-850 dark:text-rose-350">
+                                                  {consecutiveCount > 0 ? `${consecutiveCount} Sundays Absent` : "Never Checked-In"}
+                                                </span>
+                                              </div>
+                                              
+                                              {/* Inline note editor */}
+                                              <div className="space-y-1">
+                                                <span className="text-[9px] font-bold text-slate-400 block uppercase tracking-wider">Follow-Up Note / Reason:</span>
+                                                <div className="flex gap-1.5">
+                                                  <input
+                                                    type="text"
+                                                    placeholder="e.g. sick, travelled, etc."
+                                                    defaultValue={person.notes || ""}
+                                                    onBlur={(e) => {
+                                                      if (e.target.value !== (person.notes || "")) {
+                                                        handleUpdatePersonNotes(person.id, e.target.value, registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
+                                                      }
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === 'Enter') {
+                                                        handleUpdatePersonNotes(person.id, (e.target as HTMLInputElement).value, registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member");
+                                                        (e.target as HTMLInputElement).blur();
+                                                      }
+                                                    }}
+                                                    className="w-full px-2 py-1 text-[11px] rounded-lg bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-805 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-rose-550 font-normal shadow-2xs"
+                                                  />
+                                                </div>
+                                              </div>
+
+                                              {/* Contact details & direct WhatsApp */}
+                                              <div className="flex justify-between items-center pt-1 border-t border-rose-105-emerald/10 dark:border-rose-900/30 text-[10px] font-bold">
+                                                <span className="text-slate-400">Direct Message:</span>
+                                                <a
+                                                  href={`https://wa.me/${person.whatsAppNumber.replace(/[^+\d]/g, "")}?text=Hello%20${person.firstName},%20we%20missed%20you%20at%20Church%20service!%20Hope%20you%20are%20doing%20well.`}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:underline flex items-center gap-0.5"
+                                                >
+                                                  💬 Mobile WhatsApp
+                                                </a>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
                                   </td>
                                   <td className="py-3 px-4 font-mono text-xs">
                                     {person.whatsAppNumber}
@@ -5999,6 +6107,22 @@ export default function App() {
                     </button>
                   </div>
                   <form onSubmit={handleImportSubmit} className="p-6 space-y-4">
+                    {/* Backdating Option */}
+                    <div className="bg-slate-50 dark:bg-slate-955 p-3.5 rounded-2xl border border-slate-150 dark:border-slate-850 space-y-1.5 mb-1">
+                      <label className="block text-[11px] font-bold text-slate-755 dark:text-slate-300 uppercase tracking-wider">
+                        📅 Backdate / Override Session Date (Optional)
+                      </label>
+                      <input
+                        type="date"
+                        value={backdateImportDate}
+                        onChange={(e) => setBackdateImportDate(e.target.value)}
+                        className="block w-full text-xs text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                        If supplied, this date is saved for all records instead of date columns in the sheet.
+                      </p>
+                    </div>
+
                     <div>
                       <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                         Option 1: Choose an Excel Spreadsheet (.xlsx, .xls) or CSV File
