@@ -1194,6 +1194,139 @@ app.post("/api/attendance/toggle", requireSubscription, async (req, res) => {
   }
 });
 
+// Direct single attendance transaction update by Super Admins
+app.post("/api/attendance/update-detail", requireSubscription, async (req, res) => {
+  try {
+    const { id, date, firstName, lastName, whatsAppNumber, gender, personType, eventType, timestamp, adminEmail, adminId, adminRole } = req.body;
+    if (adminRole !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Admins can update attendance transactions directly." });
+    }
+    if (!id) {
+      return res.status(400).json({ error: "Missing attendance record id" });
+    }
+    const db = await getDb();
+    const record = await db.collection("attendance").findOne({ id });
+    if (!record) {
+      return res.status(404).json({ error: "Attendance record not found" });
+    }
+
+    // Update the attendance record
+    const updateDoc: any = {};
+    if (date) updateDoc.date = date;
+    if (firstName) updateDoc.firstName = firstName.trim();
+    if (lastName) updateDoc.lastName = lastName.trim();
+    if (whatsAppNumber) updateDoc.whatsAppNumber = whatsAppNumber.trim();
+    if (gender) updateDoc.gender = gender;
+    if (personType) updateDoc.personType = personType;
+    if (eventType) updateDoc.eventType = eventType;
+    if (timestamp) updateDoc.timestamp = timestamp;
+
+    await db.collection("attendance").updateOne({ id }, { $set: updateDoc });
+
+    // Also update corresponding details of the registered user if linked
+    const personId = record.personId;
+    if (personId) {
+      const personUpdate: any = {};
+      if (firstName) personUpdate.firstName = firstName.trim();
+      if (lastName) personUpdate.lastName = lastName.trim();
+      if (whatsAppNumber) personUpdate.whatsAppNumber = whatsAppNumber.trim();
+      if (gender) personUpdate.gender = gender;
+
+      const finalColl = (personType === "worker") ? "workers" : "members";
+      const originalColl = (record.personType === "worker") ? "workers" : "members";
+
+      if (finalColl !== originalColl) {
+        // Move to final collection
+        const originalPerson = await db.collection(originalColl).findOne({ id: personId });
+        if (originalPerson) {
+          await db.collection(originalColl).deleteOne({ id: personId });
+          await db.collection(finalColl).insertOne({
+            ...originalPerson,
+            ...personUpdate,
+            id: personId,
+            role: personType === "worker" ? "Worker" : (personType === "chiden" ? "chiden" : "Member")
+          });
+        }
+      } else {
+        await db.collection(finalColl).updateOne({ id: personId }, { $set: {
+          ...personUpdate,
+          role: personType === "worker" ? "Worker" : (personType === "chiden" ? "chiden" : "Member")
+        } });
+      }
+    }
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Super Admin modified attendance record ${id} for ${firstName || record.firstName} ${lastName || record.lastName}`
+    );
+
+    res.json({ success: true, message: "Attendance record details updated successfully." });
+  } catch (err: any) {
+    console.error("Super admin detail update failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Direct single attendance transaction deletion by Super Admins
+app.post("/api/attendance/delete-detail", requireSubscription, async (req, res) => {
+  try {
+    const { id, adminEmail, adminId, adminRole } = req.body;
+    if (adminRole !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Admins can delete attendance transactions directly." });
+    }
+    if (!id) {
+      return res.status(400).json({ error: "Missing attendance record id" });
+    }
+    const db = await getDb();
+    const record = await db.collection("attendance").findOne({ id });
+    if (!record) {
+      return res.status(404).json({ error: "Attendance record not found" });
+    }
+
+    // Delete the record
+    await db.collection("attendance").deleteOne({ id });
+
+    // Re-evaluate previous person last attendance stats
+    const personId = record.personId;
+    if (personId) {
+      const personType = record.personType;
+      const collectionName = personType === "worker" ? "workers" : "members";
+      const pastRecords = await db.collection("attendance")
+        .find({ personId })
+        .sort({ date: -1 })
+        .toArray();
+      const latestPastDate = pastRecords.length > 0 ? pastRecords[0].date : "";
+      
+      const updateSet: any = {
+        lastAttendanceDate: latestPastDate
+      };
+      
+      const todaySunday = getSundayOfDate(new Date());
+      const hasTodayPresent = pastRecords.some(r => r.date === todaySunday);
+      if (!hasTodayPresent) {
+        updateSet.currentStatus = "Absent";
+      }
+
+      await db.collection(collectionName).updateOne(
+        { id: personId },
+        { $set: updateSet }
+      );
+    }
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Super Admin deleted attendance transaction log for ${record.firstName} ${record.lastName}`
+    );
+
+    res.json({ success: true, message: "Attendance record deleted successfully from main logs." });
+  } catch (err: any) {
+    console.error("Super admin deletion of transaction failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin-triggered batch mark present
 app.post("/api/attendance/batch-present", requireSubscription, async (req, res) => {
   try {

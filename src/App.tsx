@@ -185,6 +185,8 @@ export default function App() {
   });
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [editingHistoryRecord, setEditingHistoryRecord] = useState<any>(null);
+  const [showHistoryEditModal, setShowHistoryEditModal] = useState(false);
   const [importRawText, setImportRawText] = useState("");
   const [backdateImportDate, setBackdateImportDate] = useState("");
   const [importTargetRole, setImportTargetRole] = useState<"member" | "children" | "worker" | "auto">("auto");
@@ -768,6 +770,69 @@ export default function App() {
       }
 
       addNotification("Attendance checked / status toggled successfully!", "success");
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  const handleHistoryRecordUpdate = async (updatedFields: any) => {
+    if (adminRole !== "Super Admin") {
+      addNotification("Access Denied: Only Super Admins can modify transaction details directly.", "error");
+      return;
+    }
+    try {
+      const response = await fetch("/api/attendance/update-detail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...updatedFields,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+          adminRole,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to update Transaction details.");
+      }
+
+      addNotification("Transaction detail updated successfully!", "success");
+      setShowHistoryEditModal(false);
+      setEditingHistoryRecord(null);
+      await loadAllAdminData();
+    } catch (err: any) {
+      addNotification(err.message, "error");
+    }
+  };
+
+  const handleHistoryRecordDelete = async (recordId: string) => {
+    if (adminRole !== "Super Admin") {
+      addNotification("Access Denied: Only Super Admins can delete transaction history.", "error");
+      return;
+    }
+    if (!window.confirm("Are you sure you want to permanently delete this attendance transaction? This will also revert their last checked-in date status if newer.")) {
+      return;
+    }
+    try {
+      const response = await fetch("/api/attendance/delete-detail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: recordId,
+          adminEmail: user?.email,
+          adminId: user?.uid,
+          adminRole,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to delete transaction.");
+      }
+
+      addNotification("Transaction record successfully deleted!", "success");
       await loadAllAdminData();
     } catch (err: any) {
       addNotification(err.message, "error");
@@ -2571,11 +2636,10 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* LIVE PROGRAM-SPECIFIC STATISTICS PANEL */}
-                  {(() => {
+                         {(() => {
                     // Pre-compute filtered stats in real-time
                     const filteredRecordsForStats = attendanceHistory.filter((rec: any) => {
-                      if (dashboardProgramFilter !== "all" && rec.eventType !== dashboardProgramFilter) return false;
+                      if (dashboardProgramFilter !== "all" && (rec.eventType || "Sunday Experience") !== dashboardProgramFilter) return false;
                       if (dashboardDateFilter !== "all" && rec.date !== dashboardDateFilter) return false;
                       if (dashboardMonthFilter !== "all") {
                         const recMonth = String(rec.month || "");
@@ -2592,7 +2656,7 @@ export default function App() {
                     });
 
                     const compileMetrics = (prog: string) => {
-                      const records = filteredRecordsForStats.filter((r: any) => r.eventType === prog);
+                      const records = filteredRecordsForStats.filter((r: any) => (r.eventType || "Sunday Experience") === prog);
                       const mCount = records.filter((r: any) => {
                         const recRole = String(r.personType || r.role || "").toLowerCase();
                         return recRole === "member";
@@ -3363,6 +3427,28 @@ export default function App() {
                                     {record.gender || "Unspecified"}
                                   </span>
                                 </div>
+
+                                {adminRole === "Super Admin" && (
+                                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 no-print">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingHistoryRecord(record);
+                                        setShowHistoryEditModal(true);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400 dark:hover:bg-blue-900/40 rounded-lg text-[11px] font-bold cursor-pointer transition-colors"
+                                    >
+                                      ✏️ Edit Detail
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleHistoryRecordDelete(record.id)}
+                                      className="inline-flex items-center gap-1 px-3 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-955/20 dark:text-rose-400 dark:hover:bg-rose-900/30 rounded-lg text-[11px] font-bold cursor-pointer transition-colors"
+                                    >
+                                      🗑️ Delete Log
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             ))
                           )}
@@ -3380,13 +3466,14 @@ export default function App() {
                               <th className="py-3 px-4">WhatsApp Phone</th>
                               <th className="py-3 px-4">Gender</th>
                               <th className="py-3 px-4">Registered At</th>
+                              {adminRole === "Super Admin" && <th className="py-3 px-4 text-right no-print">Actions</th>}
                             </tr>
                           </thead>
                           <tbody>
                             {getFilteredHistory().length === 0 ? (
                               <tr>
                                 <td
-                                  colSpan={7}
+                                  colSpan={adminRole === "Super Admin" ? 8 : 7}
                                   className="py-8 text-center text-xs font-semibold text-slate-400 uppercase tracking-widest leading-relaxed"
                                 >
                                   No transaction records found matching filters.
@@ -3449,6 +3536,27 @@ export default function App() {
                                       record.timestamp,
                                     ).toLocaleTimeString()}
                                   </td>
+                                  {adminRole === "Super Admin" && (
+                                    <td className="py-3 px-4 text-right space-x-2 no-print">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingHistoryRecord(record);
+                                          setShowHistoryEditModal(true);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400 dark:hover:bg-blue-900/40 rounded-lg text-xs font-bold cursor-pointer transition-colors"
+                                      >
+                                        ✏️ Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleHistoryRecordDelete(record.id)}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-955/20 dark:text-rose-450 dark:hover:bg-rose-900/30 rounded-lg text-xs font-bold cursor-pointer transition-colors"
+                                      >
+                                        🗑️ Delete
+                                      </button>
+                                    </td>
+                                  )}
                                 </tr>
                               ))
                             )}
@@ -6359,6 +6467,156 @@ export default function App() {
                       className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition-all shadow cursor-pointer uppercase"
                     >
                       Authorize Administrator
+                    </button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* SUPER ADMIN EDIT TRANSACTION HISTORY RECORD DETAILS MODAL */}
+            {showHistoryEditModal && editingHistoryRecord && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs no-print">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full overflow-hidden shadow-2xl relative">
+                  <div className="py-4 px-6 bg-blue-800 text-white font-display font-bold flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                       Edit Attendance Detail (Super Admin Option)
+                    </span>
+                    <button
+                      onClick={() => {
+                        setShowHistoryEditModal(false);
+                        setEditingHistoryRecord(null);
+                      }}
+                      className="text-white/85 hover:text-white cursor-pointer select-none text-sm font-semibold"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleHistoryRecordUpdate(editingHistoryRecord);
+                    }}
+                    className="p-6 space-y-4"
+                  >
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          First Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={editingHistoryRecord.firstName || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, firstName: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Last Name
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={editingHistoryRecord.lastName || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, lastName: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          WhatsApp Phone Number
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={editingHistoryRecord.whatsAppNumber || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, whatsAppNumber: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Gender
+                        </label>
+                        <select
+                          value={editingHistoryRecord.gender || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, gender: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
+                        >
+                          <option value="">Unspecified</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Attendee Category
+                        </label>
+                        <select
+                          value={editingHistoryRecord.personType || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, personType: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
+                        >
+                          <option value="member">Member</option>
+                          <option value="chiden">Kids (Children)</option>
+                          <option value="worker">Worker</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Event / Service Type
+                        </label>
+                        <select
+                          value={editingHistoryRecord.eventType || "Sunday Experience"}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, eventType: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
+                        >
+                          <option value="Sunday Experience">Sunday Experience</option>
+                          <option value="Word Cafe">Word Cafe</option>
+                          <option value="Special Program">Special Program</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Attendance Session Date
+                        </label>
+                        <input
+                          type="date"
+                          required
+                          value={editingHistoryRecord.date || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, date: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                          Full Checked-In Timestamp
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={editingHistoryRecord.timestamp || ""}
+                          onChange={(e) => setEditingHistoryRecord({ ...editingHistoryRecord, timestamp: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-550 dark:text-slate-250 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition-all shadow cursor-pointer uppercase tracking-wider"
+                    >
+                      💾 Save Attendance Changes
                     </button>
                   </form>
                 </div>
