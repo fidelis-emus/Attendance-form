@@ -95,8 +95,14 @@ class WhatsAppService {
 
         if (connection === "close") {
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-          console.log(`WhatsApp connection closed due to:`, lastDisconnect?.error, `, statusCode: ${statusCode}, reconnecting: ${shouldReconnect}`);
+          const isQrTimeout = lastDisconnect?.error && String(lastDisconnect.error).includes("QR refs attempts ended");
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isQrTimeout;
+          
+          if (isQrTimeout) {
+            console.log("WhatsApp QR registration expired/timeout. Stopping auto-updates to prevent cyclic failure. Click Connect on the dashboard to retry.");
+          } else {
+            console.log(`WhatsApp connection closed gracefully. statusCode: ${statusCode}, reconnecting: ${shouldReconnect}`);
+          }
           
           this.status = "disconnected";
           this.connectedNumber = null;
@@ -115,15 +121,17 @@ class WhatsAppService {
             this.sock = null;
           }
 
-          if (shouldReconnect) {
+          if (isQrTimeout) {
+            this.clearSession();
+          } else if (shouldReconnect) {
             // Reconnect automatically with appropriate delay (handle conflict 411 carefully)
             const delay = statusCode === 411 ? 15000 : 5000;
             if (statusCode === 411) {
-              console.warn("Session conflict (411) detected. Delaying connection loop by 15s to allow other session resources to free up...");
+              console.warn("Session conflict (411) detected. Delaying connection loop by 15s...");
             }
             setTimeout(() => this.connect(), delay);
           } else {
-            console.log("Logged out from WhatsApp. Wiping credentials session directory...");
+            console.log("Logged out or disabled on WhatsApp. Preserving system state...");
             this.clearSession();
           }
         } else if (connection === "open") {

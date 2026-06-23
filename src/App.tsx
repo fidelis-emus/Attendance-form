@@ -53,7 +53,7 @@ export default function App() {
     role?: string;
   } | null>(null);
   const [adminRole, setAdminRole] = useState<
-    "Super Admin" | "Pastor" | "Secretary" | null
+    "Super Admin" | "Pastor" | "Secretary" | "Admin" | "User" | null
   >(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -210,7 +210,7 @@ export default function App() {
   const [newAdmin, setNewAdmin] = useState({
     id: "",
     email: "",
-    role: "Secretary" as "Super Admin" | "Pastor" | "Secretary",
+    role: "Secretary" as "Super Admin" | "Pastor" | "Secretary" | "Admin" | "User",
     password: "",
   });
 
@@ -502,7 +502,7 @@ export default function App() {
         "/api/attendance",
         "/api/whatsapp/logs",
         "/api/whatsapp/config",
-        "/api/admins",
+        `/api/admins?adminId=${user?.uid || ""}`,
         "/api/audit-logs",
         "/api/sundays",
         "/api/email/config",
@@ -2477,31 +2477,29 @@ export default function App() {
                 💬 WhatsApp Logs
               </button>
               {adminRole === "Super Admin" && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setAdminTab("settings")}
-                    className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
-                      adminTab === "settings"
-                        ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
-                        : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
-                    }`}
-                  >
-                    ⚙️ WhatsApp Settings
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAdminTab("roles")}
-                    className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
-                      adminTab === "roles"
-                        ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
-                        : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
-                    }`}
-                  >
-                    👨‍💼 Administrative Roles
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={() => setAdminTab("settings")}
+                  className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
+                    adminTab === "settings"
+                      ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
+                      : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+                  }`}
+                >
+                  ⚙️ WhatsApp Settings
+                </button>
               )}
+              <button
+                type="button"
+                onClick={() => setAdminTab("roles")}
+                className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
+                  adminTab === "roles"
+                    ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+                }`}
+              >
+                👨‍💼 Administrative Roles
+              </button>
             </nav>
 
             {/* TAB CONTENT PANEL */}
@@ -5703,7 +5701,7 @@ export default function App() {
               )}
 
               {/* 7. ADMINS ROLES & AUDIT LOGS TAB */}
-              {adminTab === "roles" && adminRole === "Super Admin" && (
+              {adminTab === "roles" && (
                 <div
                   className="grid grid-cols-1 lg:grid-cols-12 gap-6"
                   id="roles-tab-panel"
@@ -5715,45 +5713,54 @@ export default function App() {
                         <Shield size={16} className="text-blue-500" />
                         Authorized Administrators
                       </h4>
-                      <button
-                        type="button"
-                        onClick={() => setShowAddAdminModal(true)}
-                        className="py-1 px-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 text-xs font-bold rounded-xl cursor-pointer"
-                      >
-                        Add Admin
-                      </button>
+                      {adminRole !== "User" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewAdmin({ id: "", email: "", role: adminRole === "Super Admin" ? "Admin" : "User", password: "" });
+                            setShowAddAdminModal(true);
+                          }}
+                          className="py-1 px-3 bg-blue-50 dark:bg-blue-900/30 text-blue-600 text-xs font-bold rounded-xl cursor-pointer"
+                        >
+                          {adminRole === "Super Admin" ? "Add Admin" : "Add User"}
+                        </button>
+                      )}
                     </div>
 
                     <div className="space-y-3">
-                      {adminsList.map((adm) => (
-                        <div
-                          key={adm.id}
-                          className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-950/60 rounded-xl border border-slate-100 dark:border-slate-900"
-                        >
-                          <div>
-                            <span className="block text-sm font-bold text-slate-800 dark:text-slate-100">
-                              {adm.email}
-                            </span>
-                            <span className="block text-[9px] font-mono text-slate-400 break-all select-all">
-                              UID: {adm.id}
-                            </span>
+                      {adminsList
+                        .filter((adm) => adminRole === "Super Admin" || adm.role !== "Super Admin")
+                        .map((adm) => (
+                          <div
+                            key={adm.id}
+                            className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-950/60 rounded-xl border border-slate-100 dark:border-slate-900"
+                          >
+                            <div>
+                              <span className="block text-sm font-bold text-slate-800 dark:text-slate-100">
+                                {adm.email}
+                              </span>
+                              <span className="block text-[9px] font-mono text-slate-400 break-all select-all">
+                                UID: {adm.id}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="inline-block px-2 py-0.5 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 text-[10px] font-bold rounded">
+                                {adm.role}
+                              </span>
+                              {(adminRole === "Super Admin" || (adminRole !== "User" && adm.role === "User")) && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleDeleteAdmin(adm.id, adm.email)
+                                  }
+                                  className="p-1 px-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg cursor-pointer text-xs font-bold"
+                                >
+                                  Revoke
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="inline-block px-2 py-0.5 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 text-[10px] font-bold rounded">
-                              {adm.role}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleDeleteAdmin(adm.id, adm.email)
-                              }
-                              className="p-1 px-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg cursor-pointer text-xs font-bold"
-                            >
-                              Revoke
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        ))}
                     </div>
                   </div>
 
@@ -6617,15 +6624,29 @@ export default function App() {
                         }
                         className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl text-slate-100 font-bold text-xs focus:outline-none"
                       >
-                        <option value="Super Admin">
-                          Super Admin (full control)
-                        </option>
-                        <option value="Pastor">
-                          Pastor (view summaries only)
-                        </option>
-                        <option value="Secretary">
-                          Secretary (manage registers & campaign dispatch)
-                        </option>
+                        {adminRole === "Super Admin" ? (
+                          <>
+                            <option value="Super Admin">
+                              Super Admin (full control)
+                            </option>
+                            <option value="Admin">
+                              Admin (general management)
+                            </option>
+                            <option value="Pastor">
+                              Pastor (view summaries only)
+                            </option>
+                            <option value="Secretary">
+                              Secretary (manage registers & campaign dispatch)
+                            </option>
+                            <option value="User">
+                              User (regular system access)
+                            </option>
+                          </>
+                        ) : (
+                          <option value="User">
+                            User (regular system access)
+                          </option>
+                        )}
                       </select>
                     </div>
 

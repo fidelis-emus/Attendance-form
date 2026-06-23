@@ -1743,7 +1743,28 @@ app.get("/api/attendance", requireSubscription, async (req, res) => {
 app.get("/api/admins", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
-    const result = await db.collection("admins").find({}, { projection: { _id: 0 } }).toArray();
+    const adminId = req.query.adminId || req.headers["x-admin-id"];
+    
+    let query = {};
+    if (adminId) {
+      const requester = await db.collection("admins").findOne({ id: adminId as string });
+      if (requester) {
+        if (requester.role === "Super Admin") {
+          query = {};
+        } else if (requester.role === "User") {
+          query = { role: "User" };
+        } else {
+          query = { role: { $ne: "Super Admin" } };
+        }
+      } else {
+        query = { role: { $ne: "Super Admin" } };
+      }
+    } else {
+      // Safeguard: default to filtering out Super Admin if requester identity is unknown
+      query = { role: { $ne: "Super Admin" } };
+    }
+
+    const result = await db.collection("admins").find(query, { projection: { _id: 0 } }).toArray();
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1758,8 +1779,42 @@ app.post("/api/admins", requireSubscription, async (req, res) => {
       return res.status(400).json({ error: "Missing parameters: email and role are required." });
     }
     const db = await getDb();
-    const emailLower = email.trim().toLowerCase();
     
+    // Authorization Check
+    const requester = await db.collection("admins").findOne({ id: adminId });
+    if (!requester) {
+      return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
+    }
+
+    // Role Enforcement:
+    // 1. "Super Admin" can create or modify any account of any role.
+    // 2. "Admin" / "Pastor" / "Secretary" (other admin) can create and manage "User" accounts, but CANNOT create/modify "Super Admin" or Admin-tier accounts (Admin, Pastor, Secretary).
+    // 3. "User" CANNOT create/modify "Super Admin" or Admin-tier accounts.
+    if (requester.role !== "Super Admin") {
+      const targetRoleLower = String(role).trim().toLowerCase();
+      const isTryingToManageSuperAdmin = targetRoleLower.includes("super");
+      const isTryingToManageAdminTier = targetRoleLower === "admin" || targetRoleLower === "pastor" || targetRoleLower === "secretary";
+
+      if (isTryingToManageSuperAdmin) {
+        return res.status(403).json({ error: "Access Denied: You are not authorized to create or modify Super Admins." });
+      }
+
+      if (requester.role === "User") {
+        if (isTryingToManageAdminTier) {
+          return res.status(403).json({ error: "Access Denied: Users cannot create or modify Admins." });
+        }
+        if (role !== "User") {
+          return res.status(403).json({ error: "Access Denied: Users can only manage other Users." });
+        }
+      } else {
+        // "other admin" (Admin, Pastor, Secretary) can create / modify users, but cannot create or elevate other accounts to Admin/Pastor/Secretary level
+        if (isTryingToManageAdminTier && id !== adminId) {
+          return res.status(403).json({ error: "Access Denied: Other admins can only manage User role accounts." });
+        }
+      }
+    }
+
+    const emailLower = email.trim().toLowerCase();
     let adminUniqueId = id;
     if (!adminUniqueId) {
       // Find if email already exists in admins
@@ -1814,7 +1869,26 @@ app.delete("/api/admins/:id", requireSubscription, async (req, res) => {
     const { adminEmail, adminId } = req.body;
     const db = await getDb();
 
+    // Authorization Check
+    const requester = await db.collection("admins").findOne({ id: adminId });
+    if (!requester) {
+      return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
+    }
+
     const targetAdmin = await db.collection("admins").findOne({ id });
+    if (!targetAdmin) {
+      return res.status(404).json({ error: "Administrator account not found." });
+    }
+
+    // Role Enforcement:
+    // 1. "Super Admin" can revoke anyone.
+    // 2. Others can only revoke "User".
+    if (requester.role !== "Super Admin") {
+      if (targetAdmin.role !== "User") {
+        return res.status(403).json({ error: "Access Denied: You are not authorized to revoke Admin or Super Admin rights." });
+      }
+    }
+
     const targetEmail = targetAdmin?.email || "unknown";
 
     await db.collection("admins").deleteOne({ id });

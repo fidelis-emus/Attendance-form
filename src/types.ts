@@ -79,7 +79,7 @@ export interface AppSettings {
 export interface Admin {
   id: string; // Auth UID
   email: string;
-  role: "Super Admin" | "Pastor" | "Secretary";
+  role: "Super Admin" | "Pastor" | "Secretary" | "Admin" | "User";
   password?: string;
 }
 
