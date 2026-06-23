@@ -1780,8 +1780,9 @@ app.post("/api/admins", requireSubscription, async (req, res) => {
     }
     const db = await getDb();
     
-    // Authorization Check
-    const requester = await db.collection("admins").findOne({ id: adminId });
+    // Authorization Check: Extract admin ID robustly
+    const effectiveAdminId = adminId || req.query.adminId || req.headers["x-admin-id"];
+    const requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
     if (!requester) {
       return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
     }
@@ -1870,7 +1871,8 @@ app.delete("/api/admins/:id", requireSubscription, async (req, res) => {
     const db = await getDb();
 
     // Authorization Check
-    const requester = await db.collection("admins").findOne({ id: adminId });
+    const effectiveAdminId = adminId || req.query.adminId || req.headers["x-admin-id"];
+    const requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
     if (!requester) {
       return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
     }

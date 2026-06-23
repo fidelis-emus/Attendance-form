@@ -48,6 +48,7 @@ export default function App() {
   // Authentication & Session States
   const [user, setUser] = useState<{
     uid: string;
+    id?: string;
     email: string;
     displayName?: string;
     role?: string;
@@ -260,6 +261,13 @@ export default function App() {
     if (stored) {
       try {
         const storedUser = JSON.parse(stored);
+        if (storedUser) {
+          if (storedUser.id && !storedUser.uid) {
+            storedUser.uid = storedUser.id;
+          } else if (storedUser.uid && !storedUser.id) {
+            storedUser.id = storedUser.uid;
+          }
+        }
         setUser(storedUser);
         setAdminRole(storedUser.role);
       } catch (e) {
@@ -382,6 +390,7 @@ export default function App() {
       }
 
       const loggedUser = {
+        id: data.id,
         uid: data.id,
         email: data.email,
         displayName: data.email.split("@")[0],
