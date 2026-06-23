@@ -44,6 +44,19 @@ import {
   EmailSettings,
 } from "./types";
 
+// Helper: Get the current or most recent Sunday (not in the future) from list of sundays
+const getCurrentSunday = (sundays: string[]): string => {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const pastOrPresentSunday = sundays.find(date => date <= todayStr);
+  if (pastOrPresentSunday) return pastOrPresentSunday;
+
+  // Hand-coded fallback calculation matching server
+  const target = new Date();
+  const day = target.getDay();
+  target.setDate(target.getDate() - day);
+  return target.toISOString().split("T")[0];
+};
+
 export default function App() {
   // Authentication & Session States
   const [user, setUser] = useState<{
@@ -918,7 +931,7 @@ export default function App() {
 
     if (selectedPersonIds.length === 0) return;
 
-    const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : (sundaysList[0] || new Date().toISOString().split("T")[0]);
+    const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : getCurrentSunday(sundaysList);
     const personType = registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member";
 
     try {
@@ -991,7 +1004,7 @@ export default function App() {
       return;
     }
 
-    const targetDate = sundayFilter && sundayFilter !== "all" ? sundayFilter : (sundaysList[0] || new Date().toISOString().split("T")[0]);
+    const targetDate = sundayFilter && sundayFilter !== "all" ? sundayFilter : getCurrentSunday(sundaysList);
 
     try {
       const response = await fetch("/api/attendance/toggle", {
@@ -5519,7 +5532,7 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => {
-                              const latestSun = sundaysList[0] || new Date().toISOString().split("T")[0];
+                              const latestSun = getCurrentSunday(sundaysList);
                               handleTriggerEmailReport(latestSun);
                             }}
                             disabled={isTriggeringEmailReport}
