@@ -13,6 +13,7 @@ import {
   Pie,
   Cell,
 } from "recharts";
+import CalendarHeatmap from "./CalendarHeatmap";
 
 interface AnalyticsProps {
   stats: any;
@@ -117,7 +118,8 @@ export default function AnalyticsCharts({ stats, attendanceHistory, sundaysList 
   ];
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="analytics-charts-grid">
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="analytics-charts-grid">
       {/* Chart 1: Weekly Attendance trends */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
         <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-4">
@@ -287,5 +289,7 @@ export default function AnalyticsCharts({ stats, attendanceHistory, sundaysList 
         </div>
       </div>
     </div>
-  );
+    <CalendarHeatmap attendanceHistory={attendanceHistory} />
+  </div>
+);
 }

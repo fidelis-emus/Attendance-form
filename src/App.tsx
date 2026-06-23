@@ -505,19 +505,20 @@ export default function App() {
 
   const loadAllAdminData = async () => {
     try {
+      const q = `adminId=${user?.uid || user?.id || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`;
       const endpoints = [
-        "/api/dashboard/stats",
-        "/api/members",
-        "/api/workers",
-        "/api/attendance",
-        "/api/whatsapp/logs",
-        "/api/whatsapp/config",
-        `/api/admins?adminId=${user?.uid || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`,
-        "/api/audit-logs",
-        "/api/sundays",
-        "/api/email/config",
-        "/api/quick-replies",
-        "/api/backup/status",
+        `/api/dashboard/stats?${q}`,
+        `/api/members?${q}`,
+        `/api/workers?${q}`,
+        `/api/attendance?${q}`,
+        `/api/whatsapp/logs?${q}`,
+        `/api/whatsapp/config?${q}`,
+        `/api/admins?${q}`,
+        `/api/audit-logs?${q}`,
+        `/api/sundays?${q}`,
+        `/api/email/config?${q}`,
+        `/api/quick-replies?${q}`,
+        `/api/backup/status?${q}`,
       ];
 
       const responses = await Promise.all(
@@ -1127,7 +1128,7 @@ export default function App() {
           memberTemplate: whatsAppConfig.memberTemplate || "",
           workerTemplate: whatsAppConfig.workerTemplate || "",
           adminEmail: user?.email,
-          adminId: user?.id, // Note: user.id based on our bootstrap login endpoint
+          adminId: user?.uid || user?.id, // Note: support both uid and id based on auth provider
         }),
       });
 
@@ -1177,7 +1178,7 @@ export default function App() {
           leaderEmails: emailConfig.leaderEmails || "",
           enabled: !!emailConfig.enabled,
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid || user?.id,
         }),
       });
 
@@ -1224,7 +1225,7 @@ export default function App() {
           senderEmail: emailConfig.senderEmail || "Church Portal <no-reply@church.org>",
           leaderEmails: emailConfig.leaderEmails || "",
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid || user?.id,
         }),
       });
 
@@ -1264,7 +1265,7 @@ export default function App() {
         body: JSON.stringify({
           date: targetDateString,
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid || user?.id,
         }),
       });
 
@@ -1429,7 +1430,7 @@ export default function App() {
           whatsAppNumber: person.whatsAppNumber,
           messageContent: formattedMessage,
           adminEmail: user?.email,
-          adminId: user?.id,
+          adminId: user?.uid || user?.id,
         }),
       });
 
