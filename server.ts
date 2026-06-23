@@ -349,11 +349,18 @@ async function requireSubscription(req: express.Request, res: express.Response, 
     const isExpired = new Date(sub.expiryDate).getTime() < Date.now();
     if (isExpired) {
       let isSuperAdmin = false;
+      let adminObj = null;
       if (adminId) {
-        const adminObj = await db.collection("admins").findOne({ id: adminId });
-        if (adminObj && adminObj.role === "Super Admin") {
-          isSuperAdmin = true;
+        adminObj = await db.collection("admins").findOne({ id: adminId });
+      }
+      if (!adminObj) {
+        const emailVal = req.headers["x-admin-email"] || req.body?.adminEmail || req.query?.adminEmail;
+        if (emailVal) {
+          adminObj = await db.collection("admins").findOne({ email: String(emailVal).trim().toLowerCase() });
         }
+      }
+      if (adminObj && adminObj.role === "Super Admin") {
+        isSuperAdmin = true;
       }
       
       if (!isSuperAdmin) {
@@ -535,11 +542,18 @@ app.get("/api/subscription/info", async (req, res) => {
     }
 
     let isSuperAdmin = false;
+    let admin = null;
     if (adminId) {
-      const admin = await db.collection("admins").findOne({ id: adminId as string });
-      if (admin && admin.role === "Super Admin") {
-        isSuperAdmin = true;
+      admin = await db.collection("admins").findOne({ id: adminId as string });
+    }
+    if (!admin) {
+      const emailVal = req.query.adminEmail || req.headers["x-admin-email"] || req.body?.adminEmail;
+      if (emailVal) {
+        admin = await db.collection("admins").findOne({ email: String(emailVal).trim().toLowerCase() });
       }
+    }
+    if (admin && admin.role === "Super Admin") {
+      isSuperAdmin = true;
     }
 
     const expiryTime = new Date(sub.expiryDate).getTime();
@@ -566,11 +580,18 @@ app.post("/api/subscription/apply", async (req, res) => {
     const db = await getDb();
 
     // Verify requesting admin exists and is Super Admin
+    let admin = null;
     if (adminId) {
-      const admin = await db.collection("admins").findOne({ id: adminId });
-      if (!admin || admin.role !== "Super Admin") {
-        return res.status(403).json({ error: "Access Denied: Only Super Administrators can apply subscription license modifications." });
+      admin = await db.collection("admins").findOne({ id: adminId });
+    }
+    if (!admin) {
+      const emailVal = adminEmail || req.headers["x-admin-email"] || req.query?.adminEmail;
+      if (emailVal) {
+        admin = await db.collection("admins").findOne({ email: String(emailVal).trim().toLowerCase() });
       }
+    }
+    if (!admin || admin.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can apply subscription license modifications." });
     }
 
     let currentSub = await db.collection("settings").findOne({ id: "subscription_status" });
@@ -1744,18 +1765,22 @@ app.get("/api/admins", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
     const adminId = req.query.adminId || req.headers["x-admin-id"];
+    const adminEmail = req.query.adminEmail || req.headers["x-admin-email"];
     
     let query = {};
+    let requester = null;
     if (adminId) {
-      const requester = await db.collection("admins").findOne({ id: adminId as string });
-      if (requester) {
-        if (requester.role === "Super Admin") {
-          query = {};
-        } else if (requester.role === "User") {
-          query = { role: "User" };
-        } else {
-          query = { role: { $ne: "Super Admin" } };
-        }
+      requester = await db.collection("admins").findOne({ id: adminId as string });
+    }
+    if (!requester && adminEmail) {
+      requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    }
+
+    if (requester) {
+      if (requester.role === "Super Admin") {
+        query = {};
+      } else if (requester.role === "User") {
+        query = { role: "User" };
       } else {
         query = { role: { $ne: "Super Admin" } };
       }
@@ -1782,7 +1807,11 @@ app.post("/api/admins", requireSubscription, async (req, res) => {
     
     // Authorization Check: Extract admin ID robustly
     const effectiveAdminId = adminId || req.query.adminId || req.headers["x-admin-id"];
-    const requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
+    let requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
+    if (!requester && (adminEmail || req.headers["x-admin-email"])) {
+      const emailVal = adminEmail || req.headers["x-admin-email"];
+      requester = await db.collection("admins").findOne({ email: String(emailVal).trim().toLowerCase() });
+    }
     if (!requester) {
       return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
     }
@@ -1872,7 +1901,11 @@ app.delete("/api/admins/:id", requireSubscription, async (req, res) => {
 
     // Authorization Check
     const effectiveAdminId = adminId || req.query.adminId || req.headers["x-admin-id"];
-    const requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
+    let requester = await db.collection("admins").findOne({ id: effectiveAdminId as string });
+    if (!requester && (adminEmail || req.headers["x-admin-email"])) {
+      const emailVal = adminEmail || req.headers["x-admin-email"];
+      requester = await db.collection("admins").findOne({ email: String(emailVal).trim().toLowerCase() });
+    }
     if (!requester) {
       return res.status(403).json({ error: "Access Denied: Unrecognized administrator identity." });
     }

@@ -431,7 +431,8 @@ export default function App() {
   const fetchSubscriptionInfo = async () => {
     try {
       const adminId = user?.uid || "";
-      const res = await fetch(`/api/subscription/info?adminId=${adminId}`);
+      const adminEmail = user?.email || "";
+      const res = await fetch(`/api/subscription/info?adminId=${adminId}&adminEmail=${encodeURIComponent(adminEmail)}`);
       if (res.ok) {
         const data = await res.json();
         setSubInfo(data);
@@ -511,7 +512,7 @@ export default function App() {
         "/api/attendance",
         "/api/whatsapp/logs",
         "/api/whatsapp/config",
-        `/api/admins?adminId=${user?.uid || ""}`,
+        `/api/admins?adminId=${user?.uid || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`,
         "/api/audit-logs",
         "/api/sundays",
         "/api/email/config",
@@ -1602,9 +1603,9 @@ export default function App() {
   // Add system administrator role
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminRole !== "Super Admin") {
+    if (adminRole === "User" || !adminRole) {
       addNotification(
-        "Only Super Admins can configure administrative users.",
+        "You do not have permission to manage system access settings.",
         "error",
       );
       return;
