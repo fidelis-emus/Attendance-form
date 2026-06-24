@@ -74,6 +74,8 @@ export interface AppSettings {
   businessAccountId: string;
   memberTemplate?: string;
   workerTemplate?: string;
+  wednesdayTemplate?: string;
+  saturdayTemplate?: string;
 }
 
 export interface Admin {
@@ -100,5 +102,33 @@ export interface EmailSettings {
   senderEmail: string;
   leaderEmails: string;
   enabled: boolean;
+}
+
+export interface SchedulerRunLog {
+  id: string;
+  campaignType: "Wednesday Word Cafe Reminder" | "Saturday Encouragement" | "Sunday Absentee Follow-Up";
+  triggerType: "Cron" | "Catch-up" | "Manual";
+  executedAt: string; // ISO string
+  targetedCount: number;
+  processedCount: number; // Success count
+  failedCount: number; // Failure count
+  targets: {
+    personId: string;
+    personName: string;
+    personType: "member" | "worker";
+    whatsAppNumber: string;
+    status: "Sent" | "Failed";
+    error?: string;
+  }[];
+  logs?: {
+    personId: string;
+    name: string;
+    personType: "member" | "worker";
+    phone: string;
+    status: "Sent" | "Failed";
+    error?: string;
+  }[];
+  status: "Completed" | "Failed";
+  error?: string;
 }
 

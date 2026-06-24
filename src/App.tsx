@@ -4,6 +4,7 @@ import {
   Users,
   Shield,
   Calendar,
+  Clock,
   QrCode,
   Settings,
   LogOut,
@@ -27,12 +28,15 @@ import {
   RefreshCw,
   Upload,
   Smile,
+  CheckCheck,
+  AlertCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 import AttendanceForm from "./components/AttendanceForm";
 import QrCodeGenerator from "./components/QrCodeGenerator";
 import AnalyticsCharts from "./components/AnalyticsCharts";
+import { ConfirmationModal } from "./components/ConfirmationModal";
 import {
   Member,
   Worker,
@@ -42,6 +46,7 @@ import {
   Admin,
   AuditLog,
   EmailSettings,
+  SchedulerRunLog,
 } from "./types";
 
 // Helper: Get the current or most recent Sunday (not in the future) from list of sundays
@@ -86,6 +91,7 @@ export default function App() {
     | "campaigns"
     | "settings"
     | "roles"
+    | "schedulerHistory"
   >("dashboard");
 
   // Registers Selection
@@ -102,6 +108,21 @@ export default function App() {
 
   // Dark Mode States
   const [darkMode, setDarkMode] = useState(false);
+
+  // Reusable confirmation modal state
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    type?: "danger" | "warning" | "info";
+    onConfirm?: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+  });
 
   // App Master Datasets
   const [stats, setStats] = useState<any>({
@@ -126,8 +147,10 @@ export default function App() {
   >([]);
   const [sundaysList, setSundaysList] = useState<string[]>([]);
   const [whatsAppLogs, setWhatsAppLogs] = useState<WhatsAppLog[]>([]);
+  const [lastRefreshedLogsAt, setLastRefreshedLogsAt] = useState<Date | null>(null);
   const [adminsList, setAdminsList] = useState<Admin[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [schedulerRuns, setSchedulerRuns] = useState<SchedulerRunLog[]>([]);
   const [whatsAppConfig, setWhatsAppConfig] = useState<AppSettings>({
     churchWhatsAppNumber: "+2349029957453",
     phoneNumberId: "",
@@ -195,6 +218,7 @@ export default function App() {
   const [selectedDetailsPersonType, setSelectedDetailsPersonType] = useState<
     "member" | "worker" | "children" | "chiden" | null
   >(null);
+  const [selectedRunForDetails, setSelectedRunForDetails] = useState<SchedulerRunLog | null>(null);
 
   // Creation Modals or Quick Forms
   const [showAddPersonModal, setShowAddPersonModal] = useState(false);
@@ -249,6 +273,14 @@ export default function App() {
   const [isSendingQuickReply, setIsSendingQuickReply] = useState(false);
   const [backupStatus, setBackupStatus] = useState<any>(null);
   const [isCheckingBackup, setIsCheckingBackup] = useState(false);
+
+  // Scheduler History filter states
+  const [schedulerCampaignFilter, setSchedulerCampaignFilter] = useState<string>("all");
+  const [schedulerTriggerFilter, setSchedulerTriggerFilter] = useState<string>("all");
+
+  // Run detail modal states
+  const [schedulerDetailSearch, setSchedulerDetailSearch] = useState<string>("");
+  const [schedulerDetailStatusFilter, setSchedulerDetailStatusFilter] = useState<"all" | "Sent" | "Failed">("all");
 
   // Load APP URL for redirection
   const [appUrl, setAppUrl] = useState("");
@@ -329,6 +361,39 @@ export default function App() {
       return () => clearInterval(interval);
     }
   }, [user, adminRole, adminTab]);
+
+  const refreshWhatsAppLogs = async () => {
+    try {
+      if (!user) return;
+      const q = `adminId=${user?.uid || user?.id || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`;
+      const response = await fetch(`/api/whatsapp/logs?${q}`);
+      if (response.ok) {
+        const waLogsList = await response.json();
+        const sortedWaLogs = [...waLogsList].sort((a: any, b: any) =>
+          (b.sentAt || "").localeCompare(a.sentAt || ""),
+        );
+        setWhatsAppLogs(sortedWaLogs);
+        setLastRefreshedLogsAt(new Date());
+      }
+    } catch (err) {
+      console.error("Failed to auto-refresh WhatsApp logs:", err);
+    }
+  };
+
+  useEffect(() => {
+    let intervalId: any = null;
+    if (viewMode === "admin" && adminTab === "campaigns" && campaignSubTab === "logs" && user) {
+      refreshWhatsAppLogs();
+      intervalId = setInterval(() => {
+        refreshWhatsAppLogs();
+      }, 30000);
+    }
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [viewMode, adminTab, campaignSubTab, user]);
 
   const handleBaileysReconnect = async () => {
     try {
@@ -532,6 +597,7 @@ export default function App() {
         `/api/email/config?${q}`,
         `/api/quick-replies?${q}`,
         `/api/backup/status?${q}`,
+        `/api/scheduler-runs?${q}`,
       ];
 
       const responses = await Promise.all(
@@ -561,6 +627,7 @@ export default function App() {
         emailConfigData,
         quickRepliesData,
         backupStatusData,
+        schedulerRunsData,
       ] = responses;
 
       const statsVal = statsData && !statsData.error ? statsData : {};
@@ -590,6 +657,7 @@ export default function App() {
       setAttendanceHistory(attendanceList);
       setSundaysList(sundaysListRes);
       setWhatsAppLogs(sortedWaLogs);
+      setLastRefreshedLogsAt(new Date());
       if (whatsappConfigData && !whatsappConfigData.error) {
         setWhatsAppConfig(whatsappConfigData);
       }
@@ -598,6 +666,13 @@ export default function App() {
       }
       setAdminsList(adminsListRes);
       setAuditLogs(sortedAuditLogs);
+      
+      if (Array.isArray(schedulerRunsData)) {
+        const sortedRuns = [...schedulerRunsData].sort((a: any, b: any) =>
+          (b.executedAt || "").localeCompare(a.executedAt || ""),
+        );
+        setSchedulerRuns(sortedRuns);
+      }
       
       if (Array.isArray(quickRepliesData)) {
         setQuickReplies(quickRepliesData);
@@ -791,41 +866,43 @@ export default function App() {
   };
 
   // Delete Individual Person
-  const handleDeletePerson = async (id: string, type: "member" | "worker" | "children" | "chiden") => {
-    if (
-      !window.confirm(
-        `Are you absolutely sure you want to remove this ${type}?`,
-      )
-    )
-      return;
-
+  const handleDeletePerson = (id: string, type: "member" | "worker" | "children" | "chiden") => {
     if (adminRole === "Pastor") {
       addNotification("Access Denied: Pastors can only view reports.", "error");
       return;
     }
 
-    const endpoint =
-      type === "worker" ? `/api/workers/${id}` : `/api/members/${id}`;
-    try {
-      const response = await fetch(endpoint, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+    setConfirmState({
+      isOpen: true,
+      title: "Remove Person Record",
+      message: `Are you absolutely sure you want to remove this ${type}? This action cannot be undone.`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        const endpoint = type === "worker" ? `/api/workers/${id}` : `/api/members/${id}`;
+        try {
+          const response = await fetch(endpoint, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to remove database entry.");
-      }
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "Failed to remove database entry.");
+          }
 
-      addNotification("Record removed successfully", "success");
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    }
+          addNotification("Record removed successfully", "success");
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   // Real-time admin quick status toggle
@@ -891,36 +968,44 @@ export default function App() {
     }
   };
 
-  const handleHistoryRecordDelete = async (recordId: string) => {
+  const handleHistoryRecordDelete = (recordId: string) => {
     if (adminRole !== "Super Admin") {
       addNotification("Access Denied: Only Super Admins can delete transaction history.", "error");
       return;
     }
-    if (!window.confirm("Are you sure you want to permanently delete this attendance transaction? This will also revert their last checked-in date status if newer.")) {
-      return;
-    }
-    try {
-      const response = await fetch("/api/attendance/delete-detail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: recordId,
-          adminEmail: user?.email,
-          adminId: user?.uid,
-          adminRole,
-        }),
-      });
+    
+    setConfirmState({
+      isOpen: true,
+      title: "Delete Attendance Record",
+      message: "Are you sure you want to permanently delete this attendance transaction? This will also revert their last checked-in date status if newer.",
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        try {
+          const response = await fetch("/api/attendance/delete-detail", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: recordId,
+              adminEmail: user?.email,
+              adminId: user?.uid,
+              adminRole,
+            }),
+          });
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to delete transaction.");
-      }
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "Failed to delete transaction.");
+          }
 
-      addNotification("Transaction record successfully deleted!", "success");
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    }
+          addNotification("Transaction record successfully deleted!", "success");
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   const handleBatchMarkPresent = async () => {
@@ -1140,6 +1225,8 @@ export default function App() {
           businessAccountId: whatsAppConfig.businessAccountId || "",
           memberTemplate: whatsAppConfig.memberTemplate || "",
           workerTemplate: whatsAppConfig.workerTemplate || "",
+          wednesdayTemplate: whatsAppConfig.wednesdayTemplate || "",
+          saturdayTemplate: whatsAppConfig.saturdayTemplate || "",
           adminEmail: user?.email,
           adminId: user?.uid || user?.id, // Note: support both uid and id based on auth provider
         }),
@@ -1299,49 +1386,59 @@ export default function App() {
   };
 
   // Resend WhatsApp campaigns either via server Meta API or WhatsApp web fallback
-  const handleWhatsAppResend = async (logItem: any) => {
+  const handleWhatsAppResend = (logItem: any) => {
     if (adminRole === "Pastor") {
       addNotification("Access Denied. Pastors cannot send messages.", "error");
       return;
     }
 
-    addNotification("Retransmitting WhatsApp Business follow-up...", "info");
+    setConfirmState({
+      isOpen: true,
+      title: "Re-send WhatsApp Message",
+      message: `Are you sure you want to re-send this message to ${logItem.personName || "the recipient"} (${logItem.whatsAppNumber})?\n\n"${logItem.messageContent}"`,
+      confirmText: "Re-send",
+      cancelText: "Cancel",
+      type: "info",
+      onConfirm: async () => {
+        addNotification("Retransmitting WhatsApp Business follow-up...", "info");
 
-    try {
-      const response = await fetch("/api/whatsapp/resend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          personId: logItem.personId,
-          personType: logItem.personType,
-          whatsAppNumber: logItem.whatsAppNumber,
-          messageContent: logItem.messageContent,
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+        try {
+          const response = await fetch("/api/whatsapp/resend", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              personId: logItem.personId,
+              personType: logItem.personType,
+              whatsAppNumber: logItem.whatsAppNumber,
+              messageContent: logItem.messageContent,
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Resend failed.");
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Resend failed.");
 
-      if (data.success === false) {
-        addNotification(
-          `Meta transmission failed. Fallback to WhatsApp Web resend!`,
-          "info",
-        );
-        const escapedTxt = encodeURIComponent(logItem.messageContent);
-        const webHref = `https://wa.me/${logItem.whatsAppNumber.replace(/\+/g, "")}?text=${escapedTxt}`;
-        window.open(webHref, "_blank");
-      } else {
-        addNotification(
-          "WhatsApp follow-up retried successfully using Meta API Cloud!",
-          "success",
-        );
-      }
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    }
+          if (data.success === false) {
+            addNotification(
+              `Meta transmission failed. Fallback to WhatsApp Web resend!`,
+              "info",
+            );
+            const escapedTxt = encodeURIComponent(logItem.messageContent);
+            const webHref = `https://wa.me/${logItem.whatsAppNumber.replace(/\+/g, "")}?text=${escapedTxt}`;
+            window.open(webHref, "_blank");
+          } else {
+            addNotification(
+              "WhatsApp follow-up retried successfully using Meta API Cloud!",
+              "success",
+            );
+          }
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   // Save or update Quick Reply Template
@@ -1374,27 +1471,35 @@ export default function App() {
   };
 
   // Delete Template
-  const handleDeleteQuickReply = async (id: string, title: string) => {
-    if (!window.confirm(`Are you sure you want to delete the template "${title}"?`)) return;
+  const handleDeleteQuickReply = (id: string, title: string) => {
+    setConfirmState({
+      isOpen: true,
+      title: "Delete Template",
+      message: `Are you sure you want to delete the template "${title}"? This cannot be undone.`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        try {
+          const response = await fetch(`/api/quick-replies/${id}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-    try {
-      const response = await fetch(`/api/quick-replies/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Failed to delete template.");
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to delete template.");
-
-      addNotification(`Template "${title}" deleted successfully!`, "success");
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    }
+          addNotification(`Template "${title}" deleted successfully!`, "success");
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   // Send selected template out to the specified person
@@ -1498,120 +1603,179 @@ export default function App() {
   };
 
   // Explicitly trigger Sunday comparisons scheduler check for test verification
-  const handleTriggerSundayComparison = async () => {
-    if (
-      !window.confirm(
-        "Do you want to instantly run the Sunday attendance comparison and transmit WhatsApp follow-ups now?",
-      )
-    )
-      return;
+  const handleTriggerSundayComparison = () => {
+    setConfirmState({
+      isOpen: true,
+      title: "Run Sunday Absent Check",
+      message: "Do you want to instantly run the Sunday attendance comparison and transmit WhatsApp follow-ups now? This will dispatch automated messages based on your Members and Workers templates.",
+      confirmText: "Run Bulk Send",
+      cancelText: "Cancel",
+      type: "info",
+      onConfirm: async () => {
+        setRunningScheduler(true);
+        setSchedulerLogs([]);
+        setShowSchedulerResult(true);
 
-    setRunningScheduler(true);
-    setSchedulerLogs([]);
-    setShowSchedulerResult(true);
+        try {
+          const response = await fetch("/api/whatsapp/trigger-sunday-followup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-    try {
-      const response = await fetch("/api/whatsapp/trigger-sunday-followup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Triggering failed.");
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Trigggering failed.");
-
-      setSchedulerLogs(data.logs || []);
-      addNotification(
-        `Follow ups run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
-        "success",
-      );
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    } finally {
-      setRunningScheduler(false);
-    }
+          setSchedulerLogs(data.logs || []);
+          addNotification(
+            `Follow ups run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
+            "success",
+          );
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        } finally {
+          setRunningScheduler(false);
+        }
+      },
+    });
   };
 
   // Explicitly trigger Saturday Encouragement campaign
-  const handleTriggerSaturdayCampaign = async () => {
-    if (
-      !window.confirm(
-        "Do you want to instantly trigger the Saturday Encouragement campaign and send messages to all members and workers?",
-      )
-    )
-      return;
+  const handleTriggerSaturdayCampaign = () => {
+    setConfirmState({
+      isOpen: true,
+      title: "Run Saturday Broadcaster",
+      message: "Do you want to instantly trigger the Saturday Encouragement campaign and send custom broadcast messages to all members and workers?",
+      confirmText: "Run Bulk Send",
+      cancelText: "Cancel",
+      type: "info",
+      onConfirm: async () => {
+        setRunningScheduler(true);
+        setSchedulerLogs([]);
+        setShowSchedulerResult(true);
 
-    setRunningScheduler(true);
-    setSchedulerLogs([]);
-    setShowSchedulerResult(true);
+        try {
+          const response = await fetch("/api/whatsapp/trigger-saturday", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-    try {
-      const response = await fetch("/api/whatsapp/trigger-saturday", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Triggering Saturday campaign failed.");
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Triggering Saturday campaign failed.");
-
-      setSchedulerLogs(data.logs || []);
-      addNotification(
-        `Saturday Encouragement run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
-        "success",
-      );
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    } finally {
-      setRunningScheduler(false);
-    }
+          setSchedulerLogs(data.logs || []);
+          addNotification(
+            `Saturday Encouragement run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
+            "success",
+          );
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        } finally {
+          setRunningScheduler(false);
+        }
+      },
+    });
   };
 
   // Explicitly trigger Wednesday Bible Study reminders
-  const handleTriggerWednesdayCampaign = async () => {
-    if (
-      !window.confirm(
-        "Do you want to instantly trigger the Wednesday Word Cafe Reminder campaign?",
-      )
-    )
+  const handleTriggerWednesdayCampaign = () => {
+    setConfirmState({
+      isOpen: true,
+      title: "Run Wednesday Word Cafe Reminder",
+      message: "Do you want to instantly trigger the Wednesday Word Cafe Reminder campaign and send study invitations to all members and workers?",
+      confirmText: "Run Bulk Send",
+      cancelText: "Cancel",
+      type: "info",
+      onConfirm: async () => {
+        setRunningScheduler(true);
+        setSchedulerLogs([]);
+        setShowSchedulerResult(true);
+
+        try {
+          const response = await fetch("/api/whatsapp/trigger-wednesday", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Triggering Wednesday campaign failed.");
+
+          setSchedulerLogs(data.logs || []);
+          addNotification(
+            `Wednesday Reminders run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
+            "success",
+          );
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        } finally {
+          setRunningScheduler(false);
+        }
+      },
+    });
+  };
+
+  // Bulk retry all failed WhatsApp messages in the current filtered logs view
+  const handleRetryAllFailed = () => {
+    const failedLogs = getFilteredCampaignLogs().filter(log => log.deliveryStatus === "Failed");
+    if (failedLogs.length === 0) {
+      addNotification("No failed messages found in the current logs view.", "info");
       return;
-
-    setRunningScheduler(true);
-    setSchedulerLogs([]);
-    setShowSchedulerResult(true);
-
-    try {
-      const response = await fetch("/api/whatsapp/trigger-wednesday", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Triggering Wednesday campaign failed.");
-
-      setSchedulerLogs(data.logs || []);
-      addNotification(
-        `Wednesday Reminders run successfully. Sent: ${data.processedCount}, Failed: ${data.failedCount}`,
-        "success",
-      );
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    } finally {
-      setRunningScheduler(false);
     }
+
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied: Pastors cannot trigger campaigns or message resends.", "error");
+      return;
+    }
+
+    setConfirmState({
+      isOpen: true,
+      title: "Retry All Failed Messages",
+      message: `Are you sure you want to bulk-retry sending all ${failedLogs.length} currently failed messages? This will re-transmit them using the Meta WhatsApp Business API.`,
+      confirmText: `Retry ${failedLogs.length} Messages`,
+      cancelText: "Cancel",
+      type: "warning",
+      onConfirm: async () => {
+        addNotification("Initiating bulk retry for failed WhatsApp messages...", "info");
+        try {
+          const response = await fetch("/api/whatsapp/bulk-retry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              logIds: failedLogs.map(log => log.id),
+              adminEmail: user?.email,
+              adminId: user?.uid || user?.id,
+            }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Bulk retry failed.");
+          }
+
+          addNotification(
+            `Bulk retry completed! Success: ${data.processedCount}, Failed: ${data.failedCount}`,
+            data.failedCount > 0 ? "error" : "success"
+          );
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   // Add system administrator role
@@ -1658,38 +1822,42 @@ export default function App() {
   };
 
   // Remove Admin role
-  const handleDeleteAdmin = async (id: string, email: string) => {
+  const handleDeleteAdmin = (id: string, email: string) => {
     if (email.toLowerCase() === "fidelisemus@gmail.com") {
       addNotification("Cannot remove bootstrapped Super Admin.", "error");
       return;
     }
-    if (
-      !window.confirm(
-        `Are you sure you want to revoke administrative control for ${email}?`,
-      )
-    )
-      return;
+    
+    setConfirmState({
+      isOpen: true,
+      title: "Revoke Admin Privileges",
+      message: `Are you sure you want to revoke administrative control for ${email}? They will no longer be able to log in to the dashboard.`,
+      confirmText: "Revoke",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        try {
+          const response = await fetch(`/api/admins/${id}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adminEmail: user?.email,
+              adminId: user?.uid,
+            }),
+          });
 
-    try {
-      const response = await fetch(`/api/admins/${id}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          adminEmail: user?.email,
-          adminId: user?.uid,
-        }),
-      });
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "Failed to remove credentials.");
+          }
 
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Failed to remove credentials.");
-      }
-
-      addNotification("Administrative privileges revoked.", "success");
-      await loadAllAdminData();
-    } catch (err: any) {
-      addNotification(err.message, "error");
-    }
+          addNotification("Administrative privileges revoked.", "success");
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
   };
 
   // Export any array to high-quality CSV
@@ -2499,6 +2667,17 @@ export default function App() {
                 }`}
               >
                 💬 WhatsApp Logs
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminTab("schedulerHistory")}
+                className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
+                  adminTab === "schedulerHistory"
+                    ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+                }`}
+              >
+                ⏰ Scheduler History
               </button>
               {adminRole === "Super Admin" && (
                 <button
@@ -4609,6 +4788,71 @@ export default function App() {
 
                   {campaignSubTab === "logs" && (
                     <>
+                      {(() => {
+                        const filteredLogs = getFilteredCampaignLogs();
+                        const sentCount = filteredLogs.filter(log => log.deliveryStatus === "Sent" || (!log.deliveryStatus || (log.deliveryStatus !== "Failed" && log.deliveryStatus !== "Delivered" && log.deliveryStatus !== "Read"))).length;
+                        const deliveredCount = filteredLogs.filter(log => log.deliveryStatus === "Delivered" || log.deliveryStatus === "Read").length;
+                        const failedCount = filteredLogs.filter(log => log.deliveryStatus === "Failed").length;
+                        return (
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 no-print">
+                            <div className="grid grid-cols-3 gap-3 w-full md:max-w-2xl">
+                              {/* Sent Card */}
+                              <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-3 rounded-xl shadow-xs flex items-center gap-3">
+                                <div className="p-2 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-lg shrink-0">
+                                  <Send size={16} />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Sent</div>
+                                  <div className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100">{sentCount}</div>
+                                </div>
+                              </div>
+
+                              {/* Delivered Card */}
+                              <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-3 rounded-xl shadow-xs flex items-center gap-3">
+                                <div className="p-2 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-lg shrink-0">
+                                  <CheckCheck size={16} />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Delivered</div>
+                                  <div className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100">{deliveredCount}</div>
+                                </div>
+                              </div>
+
+                              {/* Failed Card */}
+                              <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-3 rounded-xl shadow-xs flex items-center gap-3">
+                                <div className="p-2 bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-lg shrink-0">
+                                  <AlertCircle size={16} />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">Failed</div>
+                                  <div className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100">{failedCount}</div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Right side: Auto-refresh status & Retry All Failed button */}
+                            <div className="flex flex-wrap items-center gap-3 shrink-0">
+                              {lastRefreshedLogsAt && (
+                                <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950/30 px-2.5 py-1 rounded-lg border border-slate-150/40 dark:border-slate-850/40">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                                  Auto-refreshing • Synced {lastRefreshedLogsAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                </span>
+                              )}
+
+                              {failedCount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={handleRetryAllFailed}
+                                  className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm hover:shadow transition-all duration-150 cursor-pointer"
+                                >
+                                  <RefreshCw size={12} className="animate-spin" style={{ animationDuration: '3s' }} /> Retry All Failed ({failedCount})
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )();
+                      })()}
+
                       <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col lg:flex-row gap-3 items-center shadow-sm no-print">
                         {/* Search */}
                         <div className="relative flex-1 w-full">
@@ -5322,6 +5566,42 @@ export default function App() {
                               className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-850 dark:text-slate-100 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed"
                             />
                           </div>
+
+                          <div>
+                            <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 pl-0.5">
+                              📅 Wednesday Word Cafe Reminder Configuration
+                            </label>
+                            <textarea
+                              placeholder="Good morning and God bless you. Join us today for Word Cafe..."
+                              rows={3}
+                              value={whatsAppConfig.wednesdayTemplate || ""}
+                              onChange={(e) =>
+                                setWhatsAppConfig({
+                                  ...whatsAppConfig,
+                                  wednesdayTemplate: e.target.value,
+                                })
+                              }
+                              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-850 dark:text-slate-100 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1.5 pl-0.5">
+                              🎉 Saturday Encouragement Configuration
+                            </label>
+                            <textarea
+                              placeholder="Happy Weekend from House of Glory. We are excited to worship with you tomorrow..."
+                              rows={3}
+                              value={whatsAppConfig.saturdayTemplate || ""}
+                              onChange={(e) =>
+                                setWhatsAppConfig({
+                                  ...whatsAppConfig,
+                                  saturdayTemplate: e.target.value,
+                                })
+                              }
+                              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-slate-850 dark:text-slate-100 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed"
+                            />
+                          </div>
                         </div>
                       </div>
 
@@ -5921,6 +6201,212 @@ export default function App() {
               </div>
             )}
 
+            {/* 8. AUTOMATED ACTION HISTORY / SCHEDULER HISTORY TAB */}
+            {adminTab === "schedulerHistory" && (
+              <div className="space-y-6 animate-in fade-in duration-200" id="scheduler-history-tab-panel">
+                {/* Title & Info */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                      <Clock size={20} className="text-indigo-500 animate-pulse" />
+                      Automated Action History
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Diagnostic trace logs of every background task run, target counts, and per-run delivery statistics.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={loadAllAdminData}
+                    className="self-start md:self-auto px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all border border-slate-200/40 dark:border-slate-700/40"
+                  >
+                    <RefreshCw size={12} /> Sync Log History
+                  </button>
+                </div>
+
+                {/* KPI Summary Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" id="scheduler-history-kpis">
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="p-3 bg-indigo-50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-400 rounded-xl shrink-0">
+                      <Clock size={20} />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Total Scheduled Runs</span>
+                      <span className="text-2xl font-black text-slate-800 dark:text-slate-100">{schedulerRuns.length}</span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-xl shrink-0">
+                      <CheckCheck size={20} />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Delivered Messages</span>
+                      <span className="text-2xl font-black text-slate-800 dark:text-slate-100">
+                        {schedulerRuns.reduce((sum, run) => sum + (run.processedCount || 0), 0)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-2xl shadow-sm flex items-center gap-4">
+                    <div className="p-3 bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 rounded-xl shrink-0">
+                      <AlertCircle size={20} />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Failed Messages</span>
+                      <span className="text-2xl font-black text-slate-800 dark:text-slate-100">
+                        {schedulerRuns.reduce((sum, run) => sum + (run.failedCount || 0), 0)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filter and Table Container */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 rounded-2xl shadow-sm overflow-hidden">
+                  {/* Filters Header */}
+                  <div className="p-4 bg-slate-50/50 dark:bg-slate-950/20 border-b border-slate-200/50 dark:border-slate-850/50 flex flex-col sm:flex-row gap-3 items-center justify-between">
+                    <span className="text-xs font-bold text-slate-600 dark:text-slate-400">Filter Execution Logs</span>
+                    <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                      {/* Campaign filter */}
+                      <select
+                        id="scheduler-campaign-filter"
+                        value={schedulerCampaignFilter}
+                        onChange={(e) => setSchedulerCampaignFilter(e.target.value)}
+                        className="flex-1 sm:flex-none px-3 py-1.5 bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">All Campaign Types</option>
+                        <option value="Wednesday Word Cafe Reminder">Wednesday Reminders</option>
+                        <option value="Saturday Encouragement">Saturday Encouragements</option>
+                        <option value="Sunday Absentee Follow-Up">Sunday Follow-ups</option>
+                      </select>
+
+                      {/* Trigger filter */}
+                      <select
+                        id="scheduler-trigger-filter"
+                        value={schedulerTriggerFilter}
+                        onChange={(e) => setSchedulerTriggerFilter(e.target.value)}
+                        className="flex-1 sm:flex-none px-3 py-1.5 bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">All Trigger Modes</option>
+                        <option value="Cron">Cron Scheduler</option>
+                        <option value="Catch-up">Catch-up Middleware</option>
+                        <option value="Manual">Manual Override</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Run Logs Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse" id="scheduler-runs-table">
+                      <thead>
+                        <tr className="border-b border-slate-100 dark:border-slate-850 text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50 dark:bg-slate-950/10">
+                          <th className="py-3 px-4">Executed Time</th>
+                          <th className="py-3 px-4">Campaign Type</th>
+                          <th className="py-3 px-4">Trigger Mode</th>
+                          <th className="py-3 px-4 text-center">Targeted</th>
+                          <th className="py-3 px-4 text-center text-emerald-600 dark:text-emerald-400 font-bold">Success</th>
+                          <th className="py-3 px-4 text-center text-rose-600 dark:text-rose-400 font-bold">Failed</th>
+                          <th className="py-3 px-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const filteredRuns = schedulerRuns.filter((run) => {
+                            if (schedulerCampaignFilter !== "all" && run.campaignType !== schedulerCampaignFilter) {
+                              return false;
+                            }
+                            if (schedulerTriggerFilter !== "all" && run.triggerType !== schedulerTriggerFilter) {
+                              return false;
+                            }
+                            return true;
+                          });
+
+                          if (filteredRuns.length === 0) {
+                            return (
+                              <tr>
+                                <td colSpan={7} className="py-8 px-4 text-center text-xs text-slate-400 font-medium">
+                                  No background scheduler execution logs found matching filters.
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          return filteredRuns.map((run) => {
+                            const dateObj = new Date(run.executedAt);
+                            const formattedDate = dateObj.toLocaleDateString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric"
+                            });
+                            const formattedTime = dateObj.toLocaleTimeString(undefined, {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit"
+                            });
+
+                            return (
+                              <tr
+                                key={run.id}
+                                className="border-b border-slate-100 dark:border-slate-850/60 hover:bg-slate-50/30 dark:hover:bg-slate-950/20 text-xs transition-colors"
+                              >
+                                <td className="py-3.5 px-4">
+                                  <div className="font-semibold text-slate-800 dark:text-slate-200">{formattedDate}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">{formattedTime}</div>
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border ${
+                                    run.campaignType === "Sunday Absentee Follow-Up"
+                                      ? "bg-rose-50/40 text-rose-600 dark:bg-rose-950/20 dark:text-rose-400 border-rose-100 dark:border-rose-950/30"
+                                      : run.campaignType === "Saturday Encouragement"
+                                      ? "bg-amber-50/40 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400 border-amber-100 dark:border-amber-950/30"
+                                      : "bg-blue-50/40 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400 border-blue-100 dark:border-blue-950/30"
+                                  }`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${
+                                      run.campaignType === "Sunday Absentee Follow-Up" ? "bg-rose-500" : run.campaignType === "Saturday Encouragement" ? "bg-amber-500" : "bg-blue-500"
+                                    }`} />
+                                    {run.campaignType}
+                                  </span>
+                                </td>
+                                <td className="py-3.5 px-4">
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                                    run.triggerType === "Cron"
+                                      ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-950/20 dark:text-indigo-400"
+                                      : run.triggerType === "Catch-up"
+                                      ? "bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-400"
+                                      : "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-400"
+                                  }`}>
+                                    {run.triggerType}
+                                  </span>
+                                </td>
+                                <td className="py-3.5 px-4 text-center font-bold text-slate-700 dark:text-slate-300">
+                                  {run.targetedCount}
+                                </td>
+                                <td className="py-3.5 px-4 text-center font-bold text-emerald-600 dark:text-emerald-400">
+                                  {run.processedCount}
+                                </td>
+                                <td className={`py-3.5 px-4 text-center font-bold ${run.failedCount > 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-400"}`}>
+                                  {run.failedCount}
+                                </td>
+                                <td className="py-3.5 px-4 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedRunForDetails(run)}
+                                    className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200/40 dark:border-slate-700/40 text-[10px] font-bold rounded-lg cursor-pointer transition-all"
+                                  >
+                                    View Details
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* DETAILED ATTENDANCE & COMMUNICATION MODAL */}
             {selectedDetailsPerson && (
               <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs no-print">
@@ -6211,6 +6697,210 @@ export default function App() {
                       className="py-2.5 px-6 bg-slate-800 hover:bg-slate-900 text-white dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl text-sm font-bold tracking-tight cursor-pointer"
                     >
                       Close Profile
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SCHEDULER RUN DETAILS MODAL */}
+            {selectedRunForDetails && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs no-print" id="scheduler-detail-backdrop">
+                <div 
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-hidden shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200"
+                  id="scheduler-detail-modal-card"
+                >
+                  {/* Modal Header */}
+                  <div className="p-6 bg-slate-50 dark:bg-slate-950 border-b border-slate-100 dark:border-slate-850 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-md shadow-indigo-500/10">
+                        <Clock size={24} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-display font-bold text-lg text-slate-850 dark:text-slate-50">
+                            Execution Run Details
+                          </h3>
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            selectedRunForDetails.triggerType === "Cron"
+                              ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400"
+                              : selectedRunForDetails.triggerType === "Catch-up"
+                              ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                              : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400"
+                          }`}>
+                            {selectedRunForDetails.triggerType} Trigger
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
+                          Run ID: {selectedRunForDetails.id}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedRunForDetails(null);
+                        setSchedulerDetailSearch("");
+                        setSchedulerDetailStatusFilter("all");
+                      }}
+                      className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl cursor-pointer transition-all"
+                      id="close-scheduler-modal-btn"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+
+                  {/* Modal Body */}
+                  <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                    {/* Run Summary Meta Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-4" id="run-detail-summary-grid">
+                      <div className="p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border border-slate-100 dark:border-slate-850">
+                        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Campaign Type</span>
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block mt-1 break-words">{selectedRunForDetails.campaignType}</span>
+                      </div>
+                      <div className="p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border border-slate-100 dark:border-slate-850">
+                        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Execution Time</span>
+                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block mt-1">
+                          {new Date(selectedRunForDetails.executedAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border border-slate-100 dark:border-slate-850">
+                        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Total Targeted</span>
+                        <span className="text-xl font-black text-slate-800 dark:text-slate-100 block mt-1">{selectedRunForDetails.targetedCount}</span>
+                      </div>
+                      <div className="p-4 bg-slate-50 dark:bg-slate-950/40 rounded-2xl border border-slate-100 dark:border-slate-850">
+                        <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">Success / Failed</span>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-lg font-black text-emerald-600 dark:text-emerald-400">{selectedRunForDetails.processedCount}</span>
+                          <span className="text-xs text-slate-400 font-bold">/</span>
+                          <span className={`text-lg font-black ${selectedRunForDetails.failedCount > 0 ? "text-rose-600 dark:text-rose-400" : "text-slate-400"}`}>
+                            {selectedRunForDetails.failedCount}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Target Logs List */}
+                    <div className="space-y-4">
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                        <h4 className="font-display font-bold text-sm text-slate-800 dark:text-slate-200">
+                          Targeted Recipients & Delivery Status
+                        </h4>
+                        <div className="flex items-center gap-3">
+                          {/* Search */}
+                          <div className="relative flex-1 sm:flex-none">
+                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input
+                              type="text"
+                              id="scheduler-detail-search-input"
+                              placeholder="Search by name/phone..."
+                              value={schedulerDetailSearch}
+                              onChange={(e) => setSchedulerDetailSearch(e.target.value)}
+                              className="pl-8 pr-3 py-1.5 w-full sm:w-48 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-700 dark:text-slate-300"
+                            />
+                          </div>
+                          {/* Status filter */}
+                          <select
+                            id="scheduler-detail-status-filter"
+                            value={schedulerDetailStatusFilter}
+                            onChange={(e) => setSchedulerDetailStatusFilter(e.target.value as any)}
+                            className="px-3 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                          >
+                            <option value="all">All Statuses</option>
+                            <option value="Sent">Sent (Success)</option>
+                            <option value="Failed">Failed (Error)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Scrollable list */}
+                      <div className="border border-slate-150 dark:border-slate-850 rounded-2xl overflow-hidden bg-slate-50/50 dark:bg-slate-950/20 max-h-80 overflow-y-auto space-y-2 p-3">
+                        {(() => {
+                          const logsArray = selectedRunForDetails.logs || [];
+                          const filteredLogs = logsArray.filter((logItem) => {
+                            if (schedulerDetailStatusFilter !== "all" && logItem.status !== schedulerDetailStatusFilter) {
+                              return false;
+                            }
+                            if (schedulerDetailSearch) {
+                              const s = schedulerDetailSearch.toLowerCase();
+                              const nameMatch = logItem.name ? logItem.name.toLowerCase().includes(s) : false;
+                              const phoneMatch = logItem.phone ? logItem.phone.includes(s) : false;
+                              const idMatch = logItem.personId ? logItem.personId.toLowerCase().includes(s) : false;
+                              return nameMatch || phoneMatch || idMatch;
+                            }
+                            return true;
+                          });
+
+                          if (filteredLogs.length === 0) {
+                            return (
+                              <div className="py-12 text-center text-xs text-slate-400 font-medium">
+                                No recipients found matching the filter criteria.
+                              </div>
+                            );
+                          }
+
+                          return filteredLogs.map((logItem, index) => (
+                            <div
+                              key={index}
+                              className="p-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-850/80 rounded-xl flex flex-col gap-2 shadow-xs"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-800 dark:text-slate-100">
+                                      {logItem.name}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                                      {logItem.personType}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400">
+                                    <span className="font-mono">ID: {logItem.personId}</span>
+                                    <span>•</span>
+                                    <span className="font-mono">{logItem.phone}</span>
+                                  </div>
+                                </div>
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                                    logItem.status === "Sent"
+                                      ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
+                                      : "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
+                                  }`}
+                                >
+                                  {logItem.status === "Sent" ? (
+                                    <>
+                                      <CheckCheck size={10} /> Sent
+                                    </>
+                                  ) : (
+                                    <>
+                                      <AlertTriangle size={10} /> Failed
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                              {logItem.status === "Failed" && logItem.error && (
+                                <div className="p-2 bg-rose-50/50 dark:bg-rose-950/10 border border-rose-100/50 dark:border-rose-950/30 rounded-lg text-[10px] font-mono text-rose-600 dark:text-rose-400 flex items-start gap-1.5 leading-normal">
+                                  <AlertCircle size={12} className="shrink-0 mt-0.5" />
+                                  <span>Error Diagnostic: {logItem.error}</span>
+                                </div>
+                              )}
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Modal Footer */}
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-850 flex justify-end">
+                    <button
+                      onClick={() => {
+                        setSelectedRunForDetails(null);
+                        setSchedulerDetailSearch("");
+                        setSchedulerDetailStatusFilter("all");
+                      }}
+                      className="py-2.5 px-6 bg-slate-850 hover:bg-slate-900 text-white dark:bg-slate-850 dark:hover:bg-slate-750 rounded-xl text-xs font-bold tracking-tight cursor-pointer"
+                    >
+                      Close Details
                     </button>
                   </div>
                 </div>
@@ -6843,6 +7533,24 @@ export default function App() {
           © 2026 Church Attendance Management System. Secured Cloud Rollout.
         </p>
       </footer>
+
+      <ConfirmationModal
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmText={confirmState.confirmText}
+        cancelText={confirmState.cancelText}
+        type={confirmState.type}
+        onConfirm={() => {
+          if (confirmState.onConfirm) {
+            confirmState.onConfirm();
+          }
+          setConfirmState((prev) => ({ ...prev, isOpen: false }));
+        }}
+        onCancel={() => {
+          setConfirmState((prev) => ({ ...prev, isOpen: false }));
+        }}
+      />
     </div>
   );
 }

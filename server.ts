@@ -14,11 +14,36 @@ const PORT = 3000;
 const app = express();
 app.use(express.json());
 
-// Helper: Match MongoDB queries with equality checks
+// Helper: Match MongoDB queries with support for simple comparison operators
 function matchQuery(item: any, query: any): boolean {
   if (!query || Object.keys(query).length === 0) return true;
   for (const key of Object.keys(query)) {
-    if (query[key] !== undefined && item[key] !== query[key]) return false;
+    const queryVal = query[key];
+    if (queryVal === undefined) continue;
+    
+    const itemVal = item[key];
+    
+    if (queryVal && typeof queryVal === "object" && !Array.isArray(queryVal) && !(queryVal instanceof Date) && !(queryVal instanceof ObjectId)) {
+      // Check if it's an operator object (e.g. { $gte: ... })
+      for (const op of Object.keys(queryVal)) {
+        if (op === "$gte") {
+          if (!(itemVal >= queryVal[op])) return false;
+        } else if (op === "$gt") {
+          if (!(itemVal > queryVal[op])) return false;
+        } else if (op === "$lte") {
+          if (!(itemVal <= queryVal[op])) return false;
+        } else if (op === "$lt") {
+          if (!(itemVal < queryVal[op])) return false;
+        } else if (op === "$ne") {
+          if (itemVal === queryVal[op]) return false;
+        } else {
+          // Fallback to strict inequality if not a recognized operator
+          if (itemVal !== queryVal) return false;
+        }
+      }
+    } else {
+      if (itemVal !== queryVal) return false;
+    }
   }
   return true;
 }
@@ -221,6 +246,108 @@ function formatDate(d: Date): string {
   return d.toISOString().split("T")[0];
 }
 
+// Helper: Get date string in West Africa Time (Africa/Lagos)
+function getWatDateString(d: Date = new Date()): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Lagos",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(d);
+}
+
+// Helper: Get Date object mapped to West Africa Time (Africa/Lagos) midnight
+function getWatDate(d: Date = new Date()): Date {
+  const watStr = getWatDateString(d);
+  const [year, month, day] = watStr.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+let isCatchupRunning = false;
+
+async function runCatchupScheduler() {
+  if (isCatchupRunning) return;
+  isCatchupRunning = true;
+
+  try {
+    const db = await getDb();
+    
+    // Get current time in West Africa Time (Africa/Lagos)
+    const now = new Date();
+    const watStr = now.toLocaleString("en-US", { timeZone: "Africa/Lagos" });
+    const watDateObj = new Date(watStr);
+    const dayOfWeek = watDateObj.getDay();
+    const hour = watDateObj.getHours();
+    const watDateStr = getWatDateString(now);
+    
+    const sixteenHoursAgo = new Date(Date.now() - 16 * 60 * 60 * 1000).toISOString();
+
+    // 1. Wednesday Word Cafe Reminder (Wednesday, hour >= 10)
+    if (dayOfWeek === 3 && hour >= 10) {
+      const alreadySent = await db.collection("whatsapp_logs").findOne({
+        messageType: "Wednesday Word Cafe Reminder",
+        sentAt: { $gte: sixteenHoursAgo }
+      });
+      if (!alreadySent) {
+        console.log("[Catchup Scheduler] Detected missed Wednesday Word Cafe reminders today. Executing campaign now...");
+        const result = await executeWednesdayReminders();
+        console.log(`[Catchup Scheduler] Automated Wednesday Reminders completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+        await logSchedulerRun("Wednesday Word Cafe Reminder", "Catch-up", result);
+      }
+    }
+
+    // 2. Saturday Encouragement (Saturday, hour >= 18)
+    if (dayOfWeek === 6 && hour >= 18) {
+      const alreadySent = await db.collection("whatsapp_logs").findOne({
+        messageType: "Saturday Encouragement",
+        sentAt: { $gte: sixteenHoursAgo }
+      });
+      if (!alreadySent) {
+        console.log("[Catchup Scheduler] Detected missed Saturday Encouragement today. Executing campaign now...");
+        const result = await executeSaturdayEncouragement();
+        console.log(`[Catchup Scheduler] Automated Saturday Encouragement completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+        await logSchedulerRun("Saturday Encouragement", "Catch-up", result);
+      }
+    }
+
+    // 3. Sunday Absentee Follow-Up (Sunday, hour >= 18)
+    if (dayOfWeek === 0 && hour >= 18) {
+      const alreadySent = await db.collection("whatsapp_logs").findOne({
+        messageType: "Sunday Absentee Follow-Up",
+        sentAt: { $gte: sixteenHoursAgo }
+      });
+      if (!alreadySent) {
+        console.log("[Catchup Scheduler] Detected missed Sunday Follow-Ups today. Executing campaign now...");
+        const result = await executeSundayFollowups();
+        console.log(`[Catchup Scheduler] Automated Sunday Follow-Ups completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+        await logSchedulerRun("Sunday Absentee Follow-Up", "Catch-up", result);
+        
+        // Also trigger the email report if not sent
+        const todaySun = getSundayOfDate(getWatDate());
+        try {
+          const emailResult = await sendWeeklyEmailSummary(todaySun);
+          console.log(`[Catchup Scheduler] Automated Weekly Email Report result: ${emailResult.message}`);
+        } catch (emailErr: any) {
+          console.error("[Catchup Scheduler] Failed sending weekly email summary:", emailErr.message);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error("[Catchup Scheduler] Error during catchup check:", err);
+  } finally {
+    isCatchupRunning = false;
+  }
+}
+
+// Catch-up Middleware to automatically check & run missed schedulers on any dashboard/api activity
+app.use((req, res, next) => {
+  runCatchupScheduler().catch(err => {
+    console.error("[Catchup Scheduler Middleware] Error:", err);
+  });
+  next();
+});
+
 // Helper: Find Sunday Date for a given date
 function getSundayOfDate(d: Date): string {
   const target = new Date(d);
@@ -320,6 +447,50 @@ async function addAuditLog(userId: string, userEmail: string, action: string) {
     });
   } catch (error) {
     console.error("Failed to write audit log:", error);
+  }
+}
+
+// Helper: Log background scheduler execution
+async function logSchedulerRun(
+  campaignType: "Wednesday Word Cafe Reminder" | "Saturday Encouragement" | "Sunday Absentee Follow-Up",
+  triggerType: "Cron" | "Catch-up" | "Manual",
+  result: { processedCount: number; failedCount: number; logs: any[] }
+) {
+  try {
+    const db = await getDb();
+    const targetedCount = result.logs.length;
+    const targets = result.logs.map((item: any) => ({
+      personId: item.personId || "unknown",
+      personName: item.name || "Unknown",
+      personType: item.personType || "member",
+      whatsAppNumber: item.phone || "",
+      status: item.status || "Failed",
+      error: item.error || undefined,
+    }));
+
+    const logs = result.logs.map((item: any) => ({
+      personId: item.personId || "unknown",
+      name: item.name || "Unknown",
+      personType: item.personType || "member",
+      phone: item.phone || "",
+      status: item.status || "Failed",
+      error: item.error || undefined,
+    }));
+
+    await db.collection("scheduler_runs").insertOne({
+      id: generateId(),
+      campaignType,
+      triggerType,
+      executedAt: new Date().toISOString(),
+      targetedCount,
+      processedCount: result.processedCount,
+      failedCount: result.failedCount,
+      targets,
+      logs,
+      status: "Completed",
+    });
+  } catch (error) {
+    console.error("Failed to write scheduler run log:", error);
   }
 }
 
@@ -956,7 +1127,7 @@ app.post("/api/attendance/import", requireSubscription, async (req, res) => {
     }
 
     const db = await getDb();
-    const defaultSunday = getSundayOfDate(new Date());
+    const defaultSunday = getSundayOfDate(getWatDate());
 
     let createdCount = 0;
     let attendanceCount = 0;
@@ -1116,7 +1287,7 @@ app.post("/api/attendance/toggle", requireSubscription, async (req, res) => {
       return res.status(400).json({ error: "Missing personId or personType" });
     }
 
-    const todaySunday = getSundayOfDate(new Date());
+    const todaySunday = getSundayOfDate(getWatDate());
     const targetDate = date && date !== "all" ? date : todaySunday;
     const db = await getDb();
     const collectionName = personType === "worker" ? "workers" : "members";
@@ -1324,7 +1495,7 @@ app.post("/api/attendance/delete-detail", requireSubscription, async (req, res) 
         lastAttendanceDate: latestPastDate
       };
       
-      const todaySunday = getSundayOfDate(new Date());
+      const todaySunday = getSundayOfDate(getWatDate());
       const hasTodayPresent = pastRecords.some(r => r.date === todaySunday);
       if (!hasTodayPresent) {
         updateSet.currentStatus = "Absent";
@@ -1357,7 +1528,7 @@ app.post("/api/attendance/batch-present", requireSubscription, async (req, res) 
       return res.status(400).json({ error: "Missing personIds or personType" });
     }
 
-    const todaySunday = getSundayOfDate(new Date());
+    const todaySunday = getSundayOfDate(getWatDate());
     const targetDate = date && date !== "all" ? date : todaySunday;
     const db = await getDb();
     const collectionName = personType === "worker" ? "workers" : "members";
@@ -1424,7 +1595,7 @@ app.post("/api/attendance/batch-present", requireSubscription, async (req, res) 
 // GET Dashboards Stats
 app.get("/api/dashboard/stats", requireSubscription, async (req, res) => {
   try {
-    const todaySunday = getSundayOfDate(new Date());
+    const todaySunday = getSundayOfDate(getWatDate());
     const db = await getDb();
 
     const [members, workers, attendance, waLogs] = await Promise.all([
@@ -2151,6 +2322,17 @@ app.get("/api/audit-logs", requireSubscription, async (req, res) => {
   }
 });
 
+// GET automated scheduler runs history
+app.get("/api/scheduler-runs", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const runs = await db.collection("scheduler_runs").find({}, { projection: { _id: 0 } }).sort({ executedAt: -1 }).toArray();
+    res.json(runs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET WhatsApp Baileys connection status
 app.get("/api/whatsapp/status", requireSubscription, async (req, res) => {
   try {
@@ -2187,6 +2369,8 @@ app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
     const doc = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
     const memberDefault = "Happy Sunday {Name} and hope all is well. We didn't see you in church today. Hope to see you next Sunday, and please feel free to reach out to the church pastor if you need any assistance. God bless you.";
     const workerDefault = "Dearest worker {Name}, we missed your valuable service in church today as part of our core team. We hope everything is well. Please reach out to your department leader if you need any support. See you next Sunday. God bless your labor of love!";
+    const wednesdayDefault = "Good morning and God bless you. Join us today for Word Cafe (Bible Study) as we study God's Word together and grow in faith. We look forward to seeing you. God bless you.";
+    const saturdayDefault = "Happy Weekend from House of Glory. We are excited to worship with you tomorrow at Sunday Experience. Come expectant and invite someone. We look forward to seeing you in God's presence. God bless you.";
     
     if (doc) {
       res.json({
@@ -2194,6 +2378,8 @@ app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
         churchWhatsAppNumber: doc.churchWhatsAppNumber || "+2349029957453",
         memberTemplate: doc.memberTemplate || memberDefault,
         workerTemplate: doc.workerTemplate || workerDefault,
+        wednesdayTemplate: doc.wednesdayTemplate || wednesdayDefault,
+        saturdayTemplate: doc.saturdayTemplate || saturdayDefault,
       });
     } else {
       res.json({
@@ -2203,6 +2389,8 @@ app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
         businessAccountId: "",
         memberTemplate: memberDefault,
         workerTemplate: workerDefault,
+        wednesdayTemplate: wednesdayDefault,
+        saturdayTemplate: saturdayDefault,
       });
     }
   } catch (err: any) {
@@ -2212,7 +2400,7 @@ app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
 
 app.post("/api/whatsapp/config", requireSubscription, async (req, res) => {
   try {
-    const { churchWhatsAppNumber, phoneNumberId, accessToken, businessAccountId, memberTemplate, workerTemplate, adminEmail, adminId } = req.body;
+    const { churchWhatsAppNumber, phoneNumberId, accessToken, businessAccountId, memberTemplate, workerTemplate, wednesdayTemplate, saturdayTemplate, adminEmail, adminId } = req.body;
     const db = await getDb();
 
     await db.collection("settings").updateOne(
@@ -2226,6 +2414,8 @@ app.post("/api/whatsapp/config", requireSubscription, async (req, res) => {
           businessAccountId: businessAccountId || "",
           memberTemplate: memberTemplate || "",
           workerTemplate: workerTemplate || "",
+          wednesdayTemplate: wednesdayTemplate || "",
+          saturdayTemplate: saturdayTemplate || "",
         }
       },
       { upsert: true }
@@ -2360,14 +2550,14 @@ app.post("/api/whatsapp/resend", requireSubscription, async (req, res) => {
     let errorMessage = "";
 
     try {
-      if (config && config.phoneNumberId && config.accessToken) {
+      if (whatsappService.getStatus().status === "connected") {
         const data = await sendWhatsAppMessage(config, whatsAppNumber, messageContent);
         wamid = data.messages?.[0]?.id || null;
       } else {
-        throw new Error("Meta credentials missing - manual resend");
+        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
       }
     } catch (sendErr: any) {
-      console.error("Meta sending error during manual resend:", sendErr);
+      console.error("WhatsApp sending error during manual resend:", sendErr);
       deliveryStatus = "Failed";
       errorMessage = sendErr.message;
     }
@@ -2416,6 +2606,93 @@ app.post("/api/whatsapp/resend", requireSubscription, async (req, res) => {
   }
 });
 
+// Bulk retry failed WhatsApp messages
+app.post("/api/whatsapp/bulk-retry", requireSubscription, async (req, res) => {
+  try {
+    const { logIds, adminEmail, adminId } = req.body;
+    if (!Array.isArray(logIds) || logIds.length === 0) {
+      return res.status(400).json({ error: "Missing log IDs for retry" });
+    }
+
+    const db = await getDb();
+    const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
+
+    const logs = await db.collection("whatsapp_logs").find({ id: { $in: logIds } }).toArray();
+
+    if (logs.length === 0) {
+      return res.status(404).json({ error: "No matching logs found" });
+    }
+
+    let processedCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+
+    const isConnected = whatsappService.getStatus().status === "connected";
+    if (!isConnected) {
+      return res.status(400).json({ error: "WhatsApp status is not connected. Please connect via QR code in settings before retrying." });
+    }
+
+    for (const log of logs) {
+      let deliveryStatus: "Sent" | "Failed" = "Sent";
+      let wamid = null;
+      let errorMessage = "";
+
+      try {
+        const data = await sendWhatsAppMessage(config, log.whatsAppNumber, log.messageContent);
+        wamid = data.messages?.[0]?.id || null;
+        processedCount++;
+      } catch (sendErr: any) {
+        console.error(`WhatsApp sending error during bulk retry for ${log.personName}:`, sendErr);
+        deliveryStatus = "Failed";
+        errorMessage = sendErr.message;
+        failedCount++;
+        if (!errors.includes(sendErr.message)) {
+          errors.push(sendErr.message);
+        }
+      }
+
+      await db.collection("whatsapp_logs").updateOne(
+        { id: log.id },
+        {
+          $set: {
+            deliveryStatus,
+            sentAt: new Date().toISOString(),
+            wamid,
+            failedStatus: deliveryStatus === "Failed" ? errorMessage : null
+          }
+        }
+      );
+
+      const personCol = log.personType === "worker" ? "workers" : "members";
+      await db.collection(personCol).updateOne(
+        { id: log.personId },
+        {
+          $set: {
+            messageSent: true,
+            messageSentDate: new Date().toISOString(),
+            messageDeliveryStatus: deliveryStatus,
+          }
+        }
+      );
+    }
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Bulk retried ${logs.length} failed WhatsApp messages. Success: ${processedCount}, Failed: ${failedCount}`
+    );
+
+    res.json({
+      success: true,
+      processedCount,
+      failedCount,
+      errors
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Send Custom WhatsApp message (Dynamic Quick Reply)
 app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
   try {
@@ -2433,14 +2710,14 @@ app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
     let errorMessage = "";
 
     try {
-      if (config && config.phoneNumberId && config.accessToken) {
+      if (whatsappService.getStatus().status === "connected") {
         const data = await sendWhatsAppMessage(config, whatsAppNumber, messageContent);
         wamid = data.messages?.[0]?.id || null;
       } else {
-        throw new Error("Meta credentials missing - falling back to manual");
+        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
       }
     } catch (sendErr: any) {
-      console.error("Meta sending error during custom dispatch:", sendErr);
+      console.error("WhatsApp sending error during custom dispatch:", sendErr);
       deliveryStatus = "Failed";
       errorMessage = sendErr.message;
     }
@@ -2493,8 +2770,8 @@ app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
 async function executeSundayFollowups(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
   console.log("Triggering Sunday 6:00 PM Absent check...");
   
-  const todaySun = getSundayOfDate(new Date());
-  const prevSundayDate = new Date();
+  const todaySun = getSundayOfDate(getWatDate());
+  const prevSundayDate = getWatDate();
   prevSundayDate.setDate(prevSundayDate.getDate() - 7);
   const prevSun = getSundayOfDate(prevSundayDate);
 
@@ -2554,12 +2831,12 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       .replace(/{FullName}/g, `${person.firstName} ${person.lastName}`);
 
     try {
-      if (config && config.phoneNumberId && config.accessToken) {
+      if (whatsappService.getStatus().status === "connected") {
         const result = await sendWhatsAppMessage(config, person.whatsAppNumber, messageText);
         wamid = result.messages?.[0]?.id || null;
         processedCount++;
       } else {
-        throw new Error("Meta credentials are not configured in system settings.");
+        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
       }
     } catch (err: any) {
       console.error(`Failed to send automated follow up to ${person.whatsAppNumber}:`, err.message);
@@ -2604,7 +2881,9 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     );
 
     executionLogs.push({
+      personId: person.personId,
       name: `${person.firstName} ${person.lastName}`,
+      personType: person.personType,
       status: deliveryStatus,
       phone: person.whatsAppNumber,
       error: deliveryStatus === "Failed" ? (errMessage || "Meta API config missing or transmission failed.") : null,
@@ -2625,6 +2904,26 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       await db.collection("workers").updateOne({ id: w.id }, { $set: { currentStatus: "Absent", attendedAtTime: null } });
     }
   }
+
+  // Always write a system execution log to prevent duplicate trigger loops
+  const systemNow = new Date();
+  await db.collection("whatsapp_logs").insertOne({
+    id: "sys_" + generateId(),
+    personId: "system",
+    personName: "System Scheduler",
+    personType: "system",
+    whatsAppNumber: "0000000000",
+    messageContent: `Sunday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
+    sentAt: systemNow.toISOString(),
+    dateSent: systemNow.toISOString().split("T")[0],
+    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
+    deliveryStatus: "Sent",
+    readStatus: "Read",
+    messageStatus: "Sent",
+    messageType: "Sunday Absentee Follow-Up",
+    failedStatus: "",
+    wamid: "sys_wamid_" + Date.now(),
+  });
 
   return { processedCount, failedCount, logs: executionLogs };
 }
@@ -2669,7 +2968,8 @@ async function executeSaturdayEncouragement(): Promise<{ processedCount: number;
     });
   });
 
-  const msgBody = "Happy Weekend from House of Glory. We are excited to worship with you tomorrow at Sunday Experience. Come expectant and invite someone. We look forward to seeing you in God's presence. God bless you.";
+  const saturdayDefault = "Happy Weekend from House of Glory. We are excited to worship with you tomorrow at Sunday Experience. Come expectant and invite someone. We look forward to seeing you in God's presence. God bless you.";
+  const saturdayTemplate = config?.saturdayTemplate || saturdayDefault;
 
   let processedCount = 0;
   let failedCount = 0;
@@ -2678,18 +2978,22 @@ async function executeSaturdayEncouragement(): Promise<{ processedCount: number;
   for (const person of targetList) {
     if (!person.whatsAppNumber) continue;
     
+    const formattedMsg = saturdayTemplate
+      .replace(/{[Nn]ame}/g, person.firstName || "")
+      .replace(/{[Ff]ull[Nn]ame}/g, `${person.firstName || ""} ${person.lastName || ""}`.trim());
+
     const personCol = person.personType === "worker" ? "workers" : "members";
     let deliveryStatus: "Sent" | "Failed" = "Sent";
     let wamid = null;
     let errMessage = "";
 
     try {
-      if (config && config.phoneNumberId && config.accessToken) {
-        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, msgBody);
+      if (whatsappService.getStatus().status === "connected") {
+        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, formattedMsg);
         wamid = result.messages?.[0]?.id || null;
         processedCount++;
       } else {
-        throw new Error("Meta credentials are not configured in system settings.");
+        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
       }
     } catch (err: any) {
       console.error(`Failed to send automated Saturday Encouragement to ${person.whatsAppNumber}:`, err.message);
@@ -2708,7 +3012,7 @@ async function executeSaturdayEncouragement(): Promise<{ processedCount: number;
       personName: `${person.firstName} ${person.lastName}`,
       personType: person.personType,
       whatsAppNumber: person.whatsAppNumber,
-      messageContent: msgBody,
+      messageContent: formattedMsg,
       sentAt: now.toISOString(),
       dateSent: dateSentStr,
       timeSent: timeSentStr,
@@ -2732,12 +3036,34 @@ async function executeSaturdayEncouragement(): Promise<{ processedCount: number;
     );
 
     executionLogs.push({
+      personId: person.id,
       name: `${person.firstName} ${person.lastName}`,
+      personType: person.personType,
       status: deliveryStatus,
       phone: person.whatsAppNumber,
       error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
     });
   }
+
+  // Always write a system execution log to prevent duplicate trigger loops
+  const systemNow = new Date();
+  await db.collection("whatsapp_logs").insertOne({
+    id: "sys_" + generateId(),
+    personId: "system",
+    personName: "System Scheduler",
+    personType: "system",
+    whatsAppNumber: "0000000000",
+    messageContent: `Saturday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
+    sentAt: systemNow.toISOString(),
+    dateSent: systemNow.toISOString().split("T")[0],
+    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
+    deliveryStatus: "Sent",
+    readStatus: "Read",
+    messageStatus: "Sent",
+    messageType: "Saturday Encouragement",
+    failedStatus: "",
+    wamid: "sys_wamid_" + Date.now(),
+  });
 
   return { processedCount, failedCount, logs: executionLogs };
 }
@@ -2782,7 +3108,8 @@ async function executeWednesdayReminders(): Promise<{ processedCount: number; fa
     });
   });
 
-  const msgBody = "Good morning and God bless you. Join us today for Word Cafe (Bible Study) as we study God's Word together and grow in faith. We look forward to seeing you. God bless you.";
+  const wednesdayDefault = "Good morning and God bless you. Join us today for Word Cafe (Bible Study) as we study God's Word together and grow in faith. We look forward to seeing you. God bless you.";
+  const wednesdayTemplate = config?.wednesdayTemplate || wednesdayDefault;
 
   let processedCount = 0;
   let failedCount = 0;
@@ -2791,18 +3118,22 @@ async function executeWednesdayReminders(): Promise<{ processedCount: number; fa
   for (const person of targetList) {
     if (!person.whatsAppNumber) continue;
 
+    const formattedMsg = wednesdayTemplate
+      .replace(/{[Nn]ame}/g, person.firstName || "")
+      .replace(/{[Ff]ull[Nn]ame}/g, `${person.firstName || ""} ${person.lastName || ""}`.trim());
+
     const personCol = person.personType === "worker" ? "workers" : "members";
     let deliveryStatus: "Sent" | "Failed" = "Sent";
     let wamid = null;
     let errMessage = "";
 
     try {
-      if (config && config.phoneNumberId && config.accessToken) {
-        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, msgBody);
+      if (whatsappService.getStatus().status === "connected") {
+        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, formattedMsg);
         wamid = result.messages?.[0]?.id || null;
         processedCount++;
       } else {
-        throw new Error("Meta credentials are not configured in system settings.");
+        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
       }
     } catch (err: any) {
       console.error(`Failed to send automated Wednesday reminder to ${person.whatsAppNumber}:`, err.message);
@@ -2821,7 +3152,7 @@ async function executeWednesdayReminders(): Promise<{ processedCount: number; fa
       personName: `${person.firstName} ${person.lastName}`,
       personType: person.personType,
       whatsAppNumber: person.whatsAppNumber,
-      messageContent: msgBody,
+      messageContent: formattedMsg,
       sentAt: now.toISOString(),
       dateSent: dateSentStr,
       timeSent: timeSentStr,
@@ -2845,12 +3176,34 @@ async function executeWednesdayReminders(): Promise<{ processedCount: number; fa
     );
 
     executionLogs.push({
+      personId: person.id,
       name: `${person.firstName} ${person.lastName}`,
+      personType: person.personType,
       status: deliveryStatus,
       phone: person.whatsAppNumber,
       error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
     });
   }
+
+  // Always write a system execution log to prevent duplicate trigger loops
+  const systemNow = new Date();
+  await db.collection("whatsapp_logs").insertOne({
+    id: "sys_" + generateId(),
+    personId: "system",
+    personName: "System Scheduler",
+    personType: "system",
+    whatsAppNumber: "0000000000",
+    messageContent: `Wednesday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
+    sentAt: systemNow.toISOString(),
+    dateSent: systemNow.toISOString().split("T")[0],
+    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
+    deliveryStatus: "Sent",
+    readStatus: "Read",
+    messageStatus: "Sent",
+    messageType: "Wednesday Word Cafe Reminder",
+    failedStatus: "",
+    wamid: "sys_wamid_" + Date.now(),
+  });
 
   return { processedCount, failedCount, logs: executionLogs };
 }
@@ -2866,6 +3219,8 @@ app.post("/api/whatsapp/trigger-sunday-followup", requireSubscription, async (re
       adminEmail || "admin@church.org",
       `Explicitly triggered automated Sunday attendance comparison and WhatsApp follow-up runs. Sent: ${result.processedCount}, Failed: ${result.failedCount}`
     );
+
+    await logSchedulerRun("Sunday Absentee Follow-Up", "Manual", result);
 
     res.json({
       success: true,
@@ -2892,6 +3247,8 @@ app.post("/api/whatsapp/trigger-saturday", requireSubscription, async (req, res)
       `Explicitly triggered automated Saturday encouragement campaign. Sent: ${result.processedCount}, Failed: ${result.failedCount}`
     );
 
+    await logSchedulerRun("Saturday Encouragement", "Manual", result);
+
     res.json({
       success: true,
       processedCount: result.processedCount,
@@ -2916,6 +3273,8 @@ app.post("/api/whatsapp/trigger-wednesday", requireSubscription, async (req, res
       adminEmail || "admin@church.org",
       `Explicitly triggered automated Wednesday Word Cafe reminders. Sent: ${result.processedCount}, Failed: ${result.failedCount}`
     );
+
+    await logSchedulerRun("Wednesday Word Cafe Reminder", "Manual", result);
 
     res.json({
       success: true,
@@ -3434,7 +3793,7 @@ app.post("/api/email/send-test-email", requireSubscription, async (req, res) => 
 app.post("/api/email/trigger-weekly-report", requireSubscription, async (req, res) => {
   try {
     const { date, adminId, adminEmail } = req.body;
-    const targetDate = date || getSundayOfDate(new Date());
+    const targetDate = date || getSundayOfDate(getWatDate());
     
     console.log(`Manual trigger of weekly email attendance summary for date: ${targetDate}`);
     const result = await sendWeeklyEmailSummary(targetDate);
@@ -3604,6 +3963,8 @@ cron.schedule("0 9 * * *", async () => {
   } catch (err) {
     console.error("Backup frequency schedule execution failed:", err);
   }
+}, {
+  timezone: "Africa/Lagos"
 });
 
 // Wednesday at exactly 10:00 AM (0 10 * * 3)
@@ -3612,9 +3973,12 @@ cron.schedule("0 10 * * 3", async () => {
     console.log("[Automated Scheduler] Triggering Wednesday 10:00 AM Word Cafe Reminders...");
     const result = await executeWednesdayReminders();
     console.log(`Automated Wednesday Reminders completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+    await logSchedulerRun("Wednesday Word Cafe Reminder", "Cron", result);
   } catch (err) {
     console.error("Wednesday reminder CRON scheduler failed:", err);
   }
+}, {
+  timezone: "Africa/Lagos"
 });
 
 // Saturday at exactly 6:00 PM (0 18 * * 6)
@@ -3623,19 +3987,23 @@ cron.schedule("0 18 * * 6", async () => {
     console.log("[Automated Scheduler] Triggering Saturday 6:00 PM Encouragement transmission...");
     const result = await executeSaturdayEncouragement();
     console.log(`Automated Saturday Encouragement completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+    await logSchedulerRun("Saturday Encouragement", "Cron", result);
   } catch (err) {
     console.error("Saturday encouragement CRON scheduler failed:", err);
   }
+}, {
+  timezone: "Africa/Lagos"
 });
 
 // Sunday at exactly 6:00 PM (0 18 * * 0)
 cron.schedule("0 18 * * 0", async () => {
   try {
-    const todaySun = getSundayOfDate(new Date());
+    const todaySun = getSundayOfDate(getWatDate());
     console.log("[Automated Scheduler] Triggering Sunday 6:00 PM Attendee comparison and follow-ups...");
     // Run WhatsApp follow-ups
     const result = await executeSundayFollowups();
     console.log(`Automated Sunday 6:00 PM CRON completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
+    await logSchedulerRun("Sunday Absentee Follow-Up", "Cron", result);
     
     // Attempt Email Automated Summary to leaders as backup
     try {
@@ -3647,6 +4015,8 @@ cron.schedule("0 18 * * 0", async () => {
   } catch (err) {
     console.error("CRON task failed during background calculation:", err);
   }
+}, {
+  timezone: "Africa/Lagos"
 });
 
 // Calculate and ensure all Sundays of the year are inserted automatically every Sunday midnight
@@ -3657,6 +4027,8 @@ cron.schedule("0 0 * * 0", async () => {
   } catch (err) {
     console.error("Automated Sunday calculation scheduler failed:", err);
   }
+}, {
+  timezone: "Africa/Lagos"
 });
 
 // ==========================================
@@ -3696,6 +4068,14 @@ async function startServer() {
       console.log("[Startup] Real-time automated calculation and database insertion of Sunday service dates completed! 'sundaysList' is ready.");
     } catch (startupErr) {
       console.error("[Startup] Initial automated Sunday calculation failed:", startupErr);
+    }
+
+    // Trigger initial catchup check on boot
+    try {
+      await runCatchupScheduler();
+      console.log("[Startup] Initial catch-up scheduler executed successfully.");
+    } catch (catchupErr: any) {
+      console.error("[Startup] Initial catch-up scheduler failed:", catchupErr.message);
     }
   });
 }
