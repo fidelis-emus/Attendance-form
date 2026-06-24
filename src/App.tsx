@@ -1400,7 +1400,7 @@ export default function App() {
       cancelText: "Cancel",
       type: "info",
       onConfirm: async () => {
-        addNotification("Retransmitting WhatsApp Business follow-up...", "info");
+        addNotification("Retransmitting WhatsApp follow-up via Baileys Web Client...", "info");
 
         try {
           const response = await fetch("/api/whatsapp/resend", {
@@ -1421,7 +1421,7 @@ export default function App() {
 
           if (data.success === false) {
             addNotification(
-              `Meta transmission failed. Fallback to WhatsApp Web resend!`,
+              `Baileys connection failed. Fallback to WhatsApp Web link!`,
               "info",
             );
             const escapedTxt = encodeURIComponent(logItem.messageContent);
@@ -1429,7 +1429,7 @@ export default function App() {
             window.open(webHref, "_blank");
           } else {
             addNotification(
-              "WhatsApp follow-up retried successfully using Meta API Cloud!",
+              "WhatsApp follow-up retried successfully using WhatsApp Web Connection (Baileys)!",
               "success",
             );
           }
@@ -2277,10 +2277,10 @@ export default function App() {
   // Filter message campaigns logs
   const getFilteredCampaignLogs = () => {
     return whatsAppLogs.filter((log) => {
-      const nameMatched = log.personName
+      const nameMatched = (log.personName || "")
         .toLowerCase()
-        .includes(searchQuery.toLowerCase());
-      const phoneMatched = log.whatsAppNumber.includes(searchQuery);
+        .includes((searchQuery || "").toLowerCase());
+      const phoneMatched = (log.whatsAppNumber || "").includes(searchQuery || "");
       
       let matchesType = true;
       if (campaignTypeFilter !== "all") {
@@ -5429,13 +5429,10 @@ export default function App() {
                     <div className="mb-6">
                       <h3 className="text-lg font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 mb-1">
                         <Settings size={18} className="text-indigo-500" />
-                        Meta WhatsApp Cloud API settings
+                        WhatsApp Cloud API Parameters (Optional Backup)
                       </h3>
                       <p className="text-sm text-slate-500 dark:text-slate-400">
-                        System configuration credentials used by the server's
-                        background scheduler to run automatic text
-                        communications coming from the official organization
-                        account.
+                        These credentials can act as an optional backup transmitter. By default, <strong>WhatsApp Web Connection (Baileys)</strong> is the active client used to send all Automated Sunday Follow-ups, Saturday Encouragement, and Wednesday Word Cafe messages when linked.
                       </p>
                     </div>
 

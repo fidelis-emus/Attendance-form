@@ -2597,7 +2597,7 @@ app.post("/api/whatsapp/resend", requireSubscription, async (req, res) => {
     );
 
     if (deliveryStatus === "Failed") {
-      return res.status(200).json({ success: false, error: errorMessage || "Failed to deliver via Meta WhatsApp Business API." });
+      return res.status(200).json({ success: false, error: errorMessage || "Failed to deliver via WhatsApp Web Connection (Baileys)." });
     }
 
     res.json({ success: true, wamid });
@@ -2757,7 +2757,7 @@ app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
     );
 
     if (deliveryStatus === "Failed") {
-      return res.status(200).json({ success: false, error: errorMessage || "Failed to deliver via Meta WhatsApp Business API." });
+      return res.status(200).json({ success: false, error: errorMessage || "Failed to deliver via WhatsApp Web Connection (Baileys)." });
     }
 
     res.json({ success: true, wamid });
@@ -2886,7 +2886,7 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
       personType: person.personType,
       status: deliveryStatus,
       phone: person.whatsAppNumber,
-      error: deliveryStatus === "Failed" ? (errMessage || "Meta API config missing or transmission failed.") : null,
+      error: deliveryStatus === "Failed" ? (errMessage || "WhatsApp Web Client (Baileys) offline or transmission failed.") : null,
     });
   }
 
