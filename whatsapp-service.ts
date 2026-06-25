@@ -19,6 +19,7 @@ class WhatsAppService {
   private pinoLogger = pino({ level: "silent" });
   private sessionDir = path.join(process.cwd(), "local_db", "baileys-session");
   private getDbFn: (() => Promise<any>) | null = null;
+  private saveTimeout: any = null;
 
   getStatus() {
     return {
@@ -47,40 +48,53 @@ class WhatsAppService {
     return null;
   }
 
+  private queueSaveSession() {
+    if (this.saveTimeout) {
+      return; // Already scheduled a save soon
+    }
+    this.saveTimeout = setTimeout(async () => {
+      this.saveTimeout = null;
+      await this.saveSessionToDb();
+    }, 15000); // Debounce updates by 15 seconds to prevent server freezing
+  }
+
   private async saveSessionToDb() {
     try {
       const db = await this.getDb();
       if (!db || !fs.existsSync(this.sessionDir)) return;
-      const files = fs.readdirSync(this.sessionDir);
+      
+      const files = await fs.promises.readdir(this.sessionDir);
       
       const fileDocs = [];
       for (const file of files) {
         const filePath = path.join(this.sessionDir, file);
-        const stat = fs.statSync(filePath);
-        if (stat.isFile()) {
-          const content = fs.readFileSync(filePath, "utf-8");
-          fileDocs.push({
-            filename: file,
-            content: content,
-            updatedAt: new Date().toISOString()
-          });
+        try {
+          const stat = await fs.promises.stat(filePath);
+          if (stat.isFile()) {
+            const content = await fs.promises.readFile(filePath, "utf-8");
+            fileDocs.push({
+              filename: file,
+              content: content
+            });
+          }
+        } catch (fileErr) {
+          // File may have been deleted or locked during sync
         }
       }
 
-      for (const doc of fileDocs) {
-        await db.collection("baileys_session").updateOne(
-          { filename: doc.filename },
-          { $set: doc },
-          { upsert: true }
-        );
-      }
+      await db.collection("baileys_session").updateOne(
+        { id: "session_bundle" },
+        { 
+          $set: { 
+            id: "session_bundle",
+            files: fileDocs,
+            updatedAt: new Date().toISOString()
+          } 
+        },
+        { upsert: true }
+      );
 
-      const filenamesOnDisk = fileDocs.map(f => f.filename);
-      await db.collection("baileys_session").deleteMany({
-        filename: { $nin: filenamesOnDisk }
-      });
-
-      console.log(`[Baileys Sync] Synchronized ${fileDocs.length} session files to database.`);
+      console.log(`[Baileys Sync] Synchronized ${fileDocs.length} session files as a single bundle document to database.`);
     } catch (err: any) {
       console.error("[Baileys Sync] Failed to save session to database:", err.message);
     }
@@ -90,18 +104,33 @@ class WhatsAppService {
     try {
       const db = await this.getDb();
       if (!db) return;
-      const docs = await db.collection("baileys_session").find({}).toArray();
-      if (docs && docs.length > 0) {
+      
+      const doc = await db.collection("baileys_session").findOne({ id: "session_bundle" });
+      if (doc && Array.isArray(doc.files) && doc.files.length > 0) {
         if (!fs.existsSync(this.sessionDir)) {
           fs.mkdirSync(this.sessionDir, { recursive: true });
         }
-        for (const doc of docs) {
-          const filePath = path.join(this.sessionDir, doc.filename);
-          fs.writeFileSync(filePath, doc.content, "utf-8");
+        for (const fileDoc of doc.files) {
+          const filePath = path.join(this.sessionDir, fileDoc.filename);
+          fs.writeFileSync(filePath, fileDoc.content, "utf-8");
         }
-        console.log(`[Baileys Sync] Restored ${docs.length} session files from database.`);
+        console.log(`[Baileys Sync] Restored ${doc.files.length} session files from database bundle.`);
       } else {
-        console.log("[Baileys Sync] No session files found in database to restore.");
+        // Fallback: Check old individual docs style just in case
+        const docs = await db.collection("baileys_session").find({ id: { $ne: "session_bundle" } }).toArray();
+        const validDocs = docs.filter(d => d.filename && d.content);
+        if (validDocs && validDocs.length > 0) {
+          if (!fs.existsSync(this.sessionDir)) {
+            fs.mkdirSync(this.sessionDir, { recursive: true });
+          }
+          for (const d of validDocs) {
+            const filePath = path.join(this.sessionDir, d.filename);
+            fs.writeFileSync(filePath, d.content, "utf-8");
+          }
+          console.log(`[Baileys Sync] Restored ${validDocs.length} legacy session files from database.`);
+        } else {
+          console.log("[Baileys Sync] No session files found in database to restore.");
+        }
       }
     } catch (err: any) {
       console.error("[Baileys Sync] Failed to restore session from database:", err.message);
@@ -223,7 +252,7 @@ class WhatsAppService {
 
       this.sock.ev.on("creds.update", async () => {
         await saveCreds();
-        await this.saveSessionToDb();
+        this.queueSaveSession();
       });
 
     } catch (err) {

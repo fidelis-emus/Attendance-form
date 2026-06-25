@@ -169,6 +169,7 @@ export default function App() {
     connectedNumber: null,
     lastConnectedTime: null,
   });
+  const disconnectedTimeRef = React.useRef<number | null>(null);
   const [emailConfig, setEmailConfig] = useState<EmailSettings>({
     smtpHost: "",
     smtpPort: 587,
@@ -348,17 +349,40 @@ export default function App() {
     }
   }, [user, adminRole]);
 
-  const fetchBaileysStatus = async () => {
+  async function fetchBaileysStatus() {
     try {
       const res = await fetch("/api/whatsapp/status");
       if (res.ok) {
         const data = await res.json();
         setBaileysStatus(data);
+
+        // Auto-retry reconnect logic
+        if (data.status === "disconnected") {
+          if (disconnectedTimeRef.current === null) {
+            disconnectedTimeRef.current = Date.now();
+            console.log("[Baileys Auto-Reconnect] Client is disconnected. Starting 30-second countdown for auto-reconnection...");
+          } else {
+            const duration = (Date.now() - disconnectedTimeRef.current) / 1000;
+            console.log(`[Baileys Auto-Reconnect] Client has been disconnected for ${duration.toFixed(1)}s / 30s.`);
+            if (duration >= 30) {
+              console.log("[Baileys Auto-Reconnect] Disconnected threshold (30s) exceeded! Triggering handleBaileysReconnect automatically...");
+              // Reset timer so we don't spam reconnect requests if one is already in progress
+              disconnectedTimeRef.current = Date.now();
+              handleBaileysReconnect();
+            }
+          }
+        } else {
+          // If status is anything other than disconnected, reset the timer
+          if (disconnectedTimeRef.current !== null) {
+            console.log(`[Baileys Auto-Reconnect] Client status recovered to: ${data.status} - Resetting countdown.`);
+            disconnectedTimeRef.current = null;
+          }
+        }
       }
     } catch (err) {
       console.error("Failed to fetch Baileys status:", err);
     }
-  };
+  }
 
   useEffect(() => {
     if (user && adminRole && adminTab === "settings") {
@@ -374,8 +398,20 @@ export default function App() {
       const q = `adminId=${user?.uid || user?.id || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`;
       const response = await fetch(`/api/whatsapp/logs?${q}`);
       if (response.ok) {
-        const waLogsList = await response.json();
-        const sortedWaLogs = [...waLogsList].sort((a: any, b: any) =>
+        const rawLogs = await response.json();
+        const waLogsList = Array.isArray(rawLogs) ? rawLogs : (rawLogs && Array.isArray(rawLogs.logs) ? rawLogs.logs : []);
+        const mappedWaLogs = waLogsList.map((log: any) => ({
+          ...log,
+          id: log.id || log._id || Math.random().toString(36).substring(2, 9),
+          personId: log.personId || "",
+          personName: log.personName || "Unknown",
+          personType: log.personType || "member",
+          whatsAppNumber: log.whatsAppNumber || "",
+          messageContent: log.messageContent || "",
+          sentAt: log.sentAt || new Date().toISOString(),
+          deliveryStatus: log.deliveryStatus || "Sent",
+        }));
+        const sortedWaLogs = [...mappedWaLogs].sort((a: any, b: any) =>
           (b.sentAt || "").localeCompare(a.sentAt || ""),
         );
         setWhatsAppLogs(sortedWaLogs);
@@ -401,7 +437,7 @@ export default function App() {
     };
   }, [viewMode, adminTab, campaignSubTab, user]);
 
-  const handleBaileysReconnect = async () => {
+  async function handleBaileysReconnect() {
     try {
       const res = await fetch("/api/whatsapp/reconnect", {
         method: "POST",
@@ -413,7 +449,7 @@ export default function App() {
     } catch (err) {
       console.error("Failed to trigger reconnect:", err);
     }
-  };
+  }
 
   const handleBaileysDisconnect = async () => {
     try {
@@ -454,24 +490,48 @@ export default function App() {
 
   const handleAdminSignIn = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    const startTime = performance.now();
+    console.log("[Auth Telemetry] handleAdminSignIn initiated at:", new Date().toISOString());
     setAuthLoading(true);
     setAuthError(null);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.warn("[Auth Telemetry] Login request timed out after 12000ms. Aborting fetch...");
+      controller.abort();
+    }, 12000);
+
     try {
       if (!loginEmail.trim() || !loginPassword.trim()) {
         throw new Error("Both email and password are required.");
       }
+      
+      console.log("[Auth Telemetry] Dispatching /api/auth/login fetch request...", {
+        email: loginEmail.trim().toLowerCase()
+      });
+
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           email: loginEmail.trim().toLowerCase(),
           password: loginPassword.trim(),
         }),
       });
+
+      clearTimeout(timeoutId);
+      const networkTime = performance.now() - startTime;
+      console.log(`[Auth Telemetry] Received server response in ${networkTime.toFixed(1)}ms. Status: ${response.status}`);
+
       const data = await response.json();
       if (!response.ok) {
+        console.error("[Auth Telemetry] Server returned authentication error status:", response.status, data);
         throw new Error(data.error || "Authentication failed.");
       }
+
+      console.log("[Auth Telemetry] Server authentication verified. Starting UI state initialization...");
+      const stateStartTime = performance.now();
 
       const loggedUser = {
         id: data.id,
@@ -485,13 +545,25 @@ export default function App() {
         "church_admin_session",
         JSON.stringify(loggedUser),
       );
+      
       setUser(loggedUser as any);
       setAdminRole(data.role);
       setViewMode("admin");
+      
+      const stateTime = performance.now() - stateStartTime;
+      const totalTime = performance.now() - startTime;
+      console.log(`[Auth Telemetry] UI state initialization complete in ${stateTime.toFixed(1)}ms. Total sign-in process duration: ${totalTime.toFixed(1)}ms.`);
+      
       addNotification(`Welcome back! Role: ${data.role}`, "success");
     } catch (err: any) {
-      console.error(err);
-      setAuthError(err.message || "Authentication failed.");
+      clearTimeout(timeoutId);
+      const totalTime = performance.now() - startTime;
+      console.error(`[Auth Telemetry] Authentication flow failed after ${totalTime.toFixed(1)}ms:`, err);
+      if (err.name === "AbortError") {
+        setAuthError("Network request timed out (12s limit). Please check your connection latency or server load and try again.");
+      } else {
+        setAuthError(err.message || "Authentication failed.");
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -644,13 +716,24 @@ export default function App() {
         : [];
       const waLogsList = Array.isArray(whatsappLogsData)
         ? whatsappLogsData
-        : [];
+        : (whatsappLogsData && Array.isArray(whatsappLogsData.logs) ? whatsappLogsData.logs : []);
+      const mappedWaLogs = waLogsList.map((log: any) => ({
+        ...log,
+        id: log.id || log._id || Math.random().toString(36).substring(2, 9),
+        personId: log.personId || "",
+        personName: log.personName || "Unknown",
+        personType: log.personType || "member",
+        whatsAppNumber: log.whatsAppNumber || "",
+        messageContent: log.messageContent || "",
+        sentAt: log.sentAt || new Date().toISOString(),
+        deliveryStatus: log.deliveryStatus || "Sent",
+      }));
       const adminsListRes = Array.isArray(adminsListData) ? adminsListData : [];
       const auditLogsList = Array.isArray(auditLogsData) ? auditLogsData : [];
       const sundaysListRes = Array.isArray(sundaysData) ? sundaysData : [];
 
       // Ensure stable sorting
-      const sortedWaLogs = [...waLogsList].sort((a: any, b: any) =>
+      const sortedWaLogs = [...mappedWaLogs].sort((a: any, b: any) =>
         (b.sentAt || "").localeCompare(a.sentAt || ""),
       );
       const sortedAuditLogs = [...auditLogsList].sort((a: any, b: any) =>
@@ -713,6 +796,14 @@ export default function App() {
         phoneNum = "+" + phoneNum;
       }
 
+      const localClientDate = (() => {
+        const d = new Date();
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const date = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${date}`;
+      })();
+
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -723,7 +814,7 @@ export default function App() {
           currentStatus: newPerson.currentStatus || "Absent",
           gender: newPerson.gender,
           notes: newPerson.notes.trim(),
-          lastAttendanceDate: "",
+          lastAttendanceDate: newPerson.currentStatus === "Present" ? localClientDate : "",
           adminEmail: user?.email,
           adminId: user?.uid,
           role: type === "children" ? "chiden" : type,
@@ -1022,7 +1113,15 @@ export default function App() {
 
     if (selectedPersonIds.length === 0) return;
 
-    const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : getCurrentSunday(sundaysList);
+    const localClientDate = (() => {
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const date = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${date}`;
+    })();
+
+    const targetDate = sundayFilter !== "all" && sundayFilter ? sundayFilter : localClientDate;
     const personType = registerSubTab === "workers" ? "worker" : registerSubTab === "children" ? "children" : "member";
 
     try {
@@ -4913,8 +5012,12 @@ export default function App() {
                               log.whatsAppNumber,
                               log.messageType || "Adhoc",
                               log.messageContent,
-                              log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : ""),
-                              log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString() : ""),
+                              log.dateSent || (log.sentAt && typeof log.sentAt === 'string' && log.sentAt.includes("T") ? log.sentAt.split("T")[0] : ""),
+                              log.timeSent || (() => {
+                                if (!log.sentAt) return "";
+                                const d = new Date(log.sentAt);
+                                return isNaN(d.getTime()) ? "" : d.toLocaleTimeString();
+                              })(),
                               log.deliveryStatus,
                               log.readStatus || "Unread",
                               log.failedStatus || ""
@@ -4952,8 +5055,12 @@ export default function App() {
                           </div>
                         ) : (
                           getFilteredCampaignLogs().map((log) => {
-                            const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
-                            const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
+                            const dsStr = log.dateSent || (log.sentAt && typeof log.sentAt === 'string' && log.sentAt.includes("T") ? log.sentAt.split("T")[0] : "N/A");
+                            const tsStr = log.timeSent || (() => {
+                              if (!log.sentAt) return "N/A";
+                              const d = new Date(log.sentAt);
+                              return isNaN(d.getTime()) ? "N/A" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                            })();
                             return (
                               <div key={log.id} className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 rounded-xl shadow-xs space-y-3">
                                 <div className="flex justify-between items-start">
@@ -5042,8 +5149,12 @@ export default function App() {
                                 </tr>
                               ) : (
                                 getFilteredCampaignLogs().map((log) => {
-                                  const dsStr = log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "N/A");
-                                  const tsStr = log.timeSent || (log.sentAt ? new Date(log.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A");
+                                  const dsStr = log.dateSent || (log.sentAt && typeof log.sentAt === 'string' && log.sentAt.includes("T") ? log.sentAt.split("T")[0] : "N/A");
+                                  const tsStr = log.timeSent || (() => {
+                                    if (!log.sentAt) return "N/A";
+                                    const d = new Date(log.sentAt);
+                                    return isNaN(d.getTime()) ? "N/A" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                                  })();
                                   
                                   return (
                                     <tr
@@ -6669,7 +6780,11 @@ export default function App() {
                               >
                                 <div className="flex items-center justify-between text-[10px] text-slate-400 font-bold font-mono">
                                   <span>
-                                    {new Date(log.sentAt).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                                    {(() => {
+                                      if (!log.sentAt) return "N/A";
+                                      const d = new Date(log.sentAt);
+                                      return isNaN(d.getTime()) ? "N/A" : d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+                                    })()}
                                   </span>
                                   <span className={`px-2 py-0.5 rounded-full text-[9px] ${
                                     log.deliveryStatus === "Failed"

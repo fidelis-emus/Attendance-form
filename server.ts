@@ -1729,6 +1729,22 @@ app.post("/api/members", requireSubscription, async (req, res) => {
     const db = await getDb();
     await db.collection("members").insertOne(data);
 
+    if (data.currentStatus === "Present") {
+      const attendanceDate = lastAttendanceDate || new Date().toISOString().split("T")[0];
+      await db.collection("attendance").insertOne({
+        id: generateId(),
+        date: attendanceDate,
+        personId: id,
+        personType: inputRole === "worker" ? "worker" : (inputRole === "chiden" ? "chiden" : "member"),
+        role: inputRole === "worker" ? "Worker" : (inputRole === "chiden" ? "chiden" : "Member"),
+        firstName: data.firstName,
+        lastName: data.lastName,
+        whatsAppNumber: data.whatsAppNumber,
+        gender: data.gender,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Automatically trigger First-Time Guest Follow-up via Baileys WhatsApp
     if (data.whatsAppNumber) {
       setTimeout(async () => {
@@ -1873,6 +1889,22 @@ app.post("/api/workers", requireSubscription, async (req, res) => {
     };
     const db = await getDb();
     await db.collection("workers").insertOne(data);
+
+    if (data.currentStatus === "Present") {
+      const attendanceDate = lastAttendanceDate || new Date().toISOString().split("T")[0];
+      await db.collection("attendance").insertOne({
+        id: generateId(),
+        date: attendanceDate,
+        personId: id,
+        personType: "worker",
+        role: "Worker",
+        firstName: data.firstName,
+        lastName: data.lastName,
+        whatsAppNumber: data.whatsAppNumber,
+        gender: data.gender,
+        timestamp: new Date().toISOString()
+      });
+    }
 
     await addAuditLog(
       adminId || "unknown",
