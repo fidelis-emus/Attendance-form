@@ -211,6 +211,12 @@ export default function App() {
     setSelectedPersonIds([]);
   }, [registerSubTab, sundayFilter]);
 
+  useEffect(() => {
+    setSearchQuery("");
+    setCampaignTypeFilter("all");
+    setCampaignDateFilter("all");
+  }, [adminTab, viewMode]);
+
   // Detailed Modal states
   const [selectedDetailsPerson, setSelectedDetailsPerson] = useState<
     any | null
@@ -4865,7 +4871,7 @@ export default function App() {
                             placeholder="Search campaign logs by spelling attendee name or phone..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                            className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           />
                         </div>
 
@@ -4874,7 +4880,7 @@ export default function App() {
                           <select
                             value={campaignTypeFilter}
                             onChange={(e) => setCampaignTypeFilter(e.target.value)}
-                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-700 dark:text-slate-200 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                           >
                             <option value="all">All Campaign Types</option>
                             <option value="Sunday Absentee Follow-Up">Sunday Absentee Follow-Up</option>
@@ -4888,7 +4894,7 @@ export default function App() {
                           <select
                             value={campaignDateFilter}
                             onChange={(e) => setCampaignDateFilter(e.target.value)}
-                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-400 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                            className="w-full py-2 px-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs text-slate-700 dark:text-slate-200 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                           >
                             <option value="all">All Dates</option>
                             {Array.from(new Set(whatsAppLogs.map(log => log.dateSent || (log.sentAt ? log.sentAt.split("T")[0] : "")).filter(Boolean))).sort().reverse().map(dt => (

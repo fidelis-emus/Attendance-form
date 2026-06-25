@@ -18,6 +18,7 @@ class WhatsAppService {
   private lastConnectedTime: string | null = null;
   private pinoLogger = pino({ level: "silent" });
   private sessionDir = path.join(process.cwd(), "local_db", "baileys-session");
+  private getDbFn: (() => Promise<any>) | null = null;
 
   getStatus() {
     return {
@@ -28,12 +29,83 @@ class WhatsAppService {
     };
   }
 
-  async init() {
+  async init(getDbFn?: () => Promise<any>) {
+    if (getDbFn) {
+      this.getDbFn = getDbFn;
+    }
     if (this.sock) {
       console.log("WhatsApp client already defined. Skipping duplicate initialization.");
       return;
     }
     await this.connect();
+  }
+
+  private async getDb() {
+    if (this.getDbFn) {
+      return await this.getDbFn();
+    }
+    return null;
+  }
+
+  private async saveSessionToDb() {
+    try {
+      const db = await this.getDb();
+      if (!db || !fs.existsSync(this.sessionDir)) return;
+      const files = fs.readdirSync(this.sessionDir);
+      
+      const fileDocs = [];
+      for (const file of files) {
+        const filePath = path.join(this.sessionDir, file);
+        const stat = fs.statSync(filePath);
+        if (stat.isFile()) {
+          const content = fs.readFileSync(filePath, "utf-8");
+          fileDocs.push({
+            filename: file,
+            content: content,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+
+      for (const doc of fileDocs) {
+        await db.collection("baileys_session").updateOne(
+          { filename: doc.filename },
+          { $set: doc },
+          { upsert: true }
+        );
+      }
+
+      const filenamesOnDisk = fileDocs.map(f => f.filename);
+      await db.collection("baileys_session").deleteMany({
+        filename: { $nin: filenamesOnDisk }
+      });
+
+      console.log(`[Baileys Sync] Synchronized ${fileDocs.length} session files to database.`);
+    } catch (err: any) {
+      console.error("[Baileys Sync] Failed to save session to database:", err.message);
+    }
+  }
+
+  private async restoreSessionFromDb() {
+    try {
+      const db = await this.getDb();
+      if (!db) return;
+      const docs = await db.collection("baileys_session").find({}).toArray();
+      if (docs && docs.length > 0) {
+        if (!fs.existsSync(this.sessionDir)) {
+          fs.mkdirSync(this.sessionDir, { recursive: true });
+        }
+        for (const doc of docs) {
+          const filePath = path.join(this.sessionDir, doc.filename);
+          fs.writeFileSync(filePath, doc.content, "utf-8");
+        }
+        console.log(`[Baileys Sync] Restored ${docs.length} session files from database.`);
+      } else {
+        console.log("[Baileys Sync] No session files found in database to restore.");
+      }
+    } catch (err: any) {
+      console.error("[Baileys Sync] Failed to restore session from database:", err.message);
+    }
   }
 
   async connect() {
@@ -60,6 +132,8 @@ class WhatsAppService {
       if (!fs.existsSync(path.join(process.cwd(), "local_db"))) {
         fs.mkdirSync(path.join(process.cwd(), "local_db"), { recursive: true });
       }
+
+      await this.restoreSessionFromDb();
 
       const { state, saveCreds } = await useMultiFileAuthState(this.sessionDir);
       const { version } = await fetchLatestBaileysVersion();
@@ -96,12 +170,13 @@ class WhatsAppService {
         if (connection === "close") {
           const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
           const isQrTimeout = lastDisconnect?.error && String(lastDisconnect.error).includes("QR refs attempts ended");
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut && !isQrTimeout;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const shouldReconnect = !isLoggedOut && !isQrTimeout;
           
           if (isQrTimeout) {
             console.log("WhatsApp QR registration expired/timeout. Stopping auto-updates to prevent cyclic failure. Click Connect on the dashboard to retry.");
           } else {
-            console.log(`WhatsApp connection closed gracefully. statusCode: ${statusCode}, reconnecting: ${shouldReconnect}`);
+            console.log(`WhatsApp connection closed. statusCode: ${statusCode}, reconnecting: ${shouldReconnect}`);
           }
           
           this.status = "disconnected";
@@ -121,7 +196,8 @@ class WhatsAppService {
             this.sock = null;
           }
 
-          if (isQrTimeout) {
+          if (isLoggedOut) {
+            console.log("Logged out or disabled on WhatsApp. Wiping session...");
             this.clearSession();
           } else if (shouldReconnect) {
             // Reconnect automatically with appropriate delay (handle conflict 411 carefully)
@@ -131,8 +207,7 @@ class WhatsAppService {
             }
             setTimeout(() => this.connect(), delay);
           } else {
-            console.log("Logged out or disabled on WhatsApp. Preserving system state...");
-            this.clearSession();
+            console.log("Preserving session for potential reconnection...");
           }
         } else if (connection === "open") {
           console.log("WhatsApp Web connection established successfully!");
@@ -146,7 +221,10 @@ class WhatsAppService {
         }
       });
 
-      this.sock.ev.on("creds.update", saveCreds);
+      this.sock.ev.on("creds.update", async () => {
+        await saveCreds();
+        await this.saveSessionToDb();
+      });
 
     } catch (err) {
       console.error("WhatsApp connection initialization error:", err);
@@ -194,14 +272,19 @@ class WhatsAppService {
     this.clearSession();
   }
 
-  private clearSession() {
+  private async clearSession() {
     try {
       if (fs.existsSync(this.sessionDir)) {
         fs.rmSync(this.sessionDir, { recursive: true, force: true });
         console.log("Successfully deleted session directory:", this.sessionDir);
       }
+      const db = await this.getDb();
+      if (db) {
+        await db.collection("baileys_session").deleteMany({});
+        console.log("[Baileys Sync] Cleared session collection from database.");
+      }
     } catch (err) {
-      console.error("Error clearing WhatsApp session directory:", err);
+      console.error("Error clearing WhatsApp session directory & collection:", err);
     }
   }
 }

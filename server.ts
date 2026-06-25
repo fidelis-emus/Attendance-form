@@ -852,17 +852,18 @@ app.post("/api/attendance/submit", async (req, res) => {
     const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     
-    const dayOfWeek = daysOfWeek[d.getDay()];
-    const day = dayOfWeek; // Day of Week as day field
-    const month = monthNames[d.getMonth()];
-    const year = String(d.getFullYear());
     const attendanceDate = d.toISOString().split("T")[0];
     const attendanceTime = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
     
     const rawDate = submissionDate ? submissionDate : attendanceDate;
     const [y, mStr, dStr] = rawDate.split("-").map(Number);
     const localDate = new Date(y, mStr - 1, dStr);
-    const dateUsed = getSundayOfDate(localDate);
+    const dateUsed = rawDate;
+    
+    const dayOfWeek = daysOfWeek[localDate.getDay()];
+    const day = dayOfWeek; // Day of Week as day field
+    const month = monthNames[localDate.getMonth()];
+    const year = String(localDate.getFullYear());
     const time = attendanceTime;
 
     const selectedEvent = eventType || "Sunday Experience"; // Default fallbacks 
@@ -1069,7 +1070,7 @@ app.post("/api/attendance/auto-checkin", async (req, res) => {
     const rawDate = submissionDate ? submissionDate : new Date().toISOString().split("T")[0];
     const [y, mStr, dStr] = rawDate.split("-").map(Number);
     const localDate = new Date(y, mStr - 1, dStr);
-    const dateUsed = getSundayOfDate(localDate);
+    const dateUsed = rawDate;
     const db = await getDb();
 
     // Look up in members
@@ -4056,7 +4057,7 @@ async function startServer() {
     
     // Initialize Baileys WhatsApp service
     try {
-      await whatsappService.init();
+      await whatsappService.init(getDb);
       console.log("[Startup] WhatsApp Baileys service initialized successfully!");
     } catch (waErr: any) {
       console.error("[Startup] Failed to initialize WhatsApp Baileys service:", waErr.message);
