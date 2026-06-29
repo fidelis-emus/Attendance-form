@@ -30,12 +30,19 @@ import {
   Smile,
   CheckCheck,
   AlertCircle,
+  Zap,
+  Play,
+  Pause,
+  StopCircle,
+  Plus,
+  Check,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 import AttendanceForm from "./components/AttendanceForm";
 import QrCodeGenerator from "./components/QrCodeGenerator";
 import AnalyticsCharts from "./components/AnalyticsCharts";
+import BackupRestoreManager from "./components/BackupRestoreManager";
 import { ConfirmationModal } from "./components/ConfirmationModal";
 import {
   Member,
@@ -93,6 +100,35 @@ export default function App() {
     | "roles"
     | "schedulerHistory"
   >("dashboard");
+
+  const [prevAdminTab, setPrevAdminTab] = useState<
+    | "dashboard"
+    | "tickets"
+    | "registers"
+    | "absentees"
+    | "campaigns"
+    | "settings"
+    | "roles"
+    | "schedulerHistory"
+  >("dashboard");
+
+  const [currentAdminTab, setCurrentAdminTab] = useState<
+    | "dashboard"
+    | "tickets"
+    | "registers"
+    | "absentees"
+    | "campaigns"
+    | "settings"
+    | "roles"
+    | "schedulerHistory"
+  >("dashboard");
+
+  useEffect(() => {
+    if (adminTab !== currentAdminTab) {
+      setPrevAdminTab(currentAdminTab);
+      setCurrentAdminTab(adminTab);
+    }
+  }, [adminTab, currentAdminTab]);
 
   // Registers Selection
   const [registerSubTab, setRegisterSubTab] = useState<
@@ -198,6 +234,7 @@ export default function App() {
 
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState("");
+  const [campaignSearchQuery, setCampaignSearchQuery] = useState("");
   const [monthFilter, setMonthFilter] = useState("all");
   const [sundayFilter, setSundayFilter] = useState("all");
   const [historyProgramFilter, setHistoryProgramFilter] = useState("all");
@@ -263,6 +300,47 @@ export default function App() {
   const [runningScheduler, setRunningScheduler] = useState(false);
   const [schedulerLogs, setSchedulerLogs] = useState<any[]>([]);
   const [showSchedulerResult, setShowSchedulerResult] = useState(false);
+  const [activeCampaignProgress, setActiveCampaignProgress] = useState<{
+    campaignRunId: string;
+    campaignType: string;
+    status: "idle" | "sending" | "completed";
+    currentBatch: string;
+    currentProgress: number;
+    totalInBatch: number;
+    totalProcessed: number;
+    totalTargeted: number;
+  } | null>(null);
+
+  // Background queue states
+  const [queueItems, setQueueItems] = useState<any[]>([]);
+  const [queueFilterStatus, setQueueFilterStatus] = useState("all");
+  const [queueFilterType, setQueueFilterType] = useState("all");
+  const [queueSearch, setQueueSearch] = useState("");
+  const [queueProgress, setQueueProgress] = useState<any>(null);
+
+  // Dashboard Date-Specific Attendance States
+  const [dashboardDate, setDashboardDate] = useState<string>(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
+  const [dashboardAttendanceRecords, setDashboardAttendanceRecords] = useState<any[]>([]);
+  const [dashboardStats, setDashboardStats] = useState<any>({
+    totalMembers: 0,
+    totalWorkers: 0,
+    totalChildren: 0,
+    membersPresent: 0,
+    workersPresent: 0,
+    childrenPresent: 0,
+    absentMembers: 0,
+    absentWorkers: 0,
+    absentChildren: 0,
+    malePresent: 0,
+    femalePresent: 0,
+  });
+  const [loadingDashboardAttendance, setLoadingDashboardAttendance] = useState(false);
 
   // Notifications State
   const [notifications, setNotifications] = useState<
@@ -280,6 +358,262 @@ export default function App() {
   const [isSendingQuickReply, setIsSendingQuickReply] = useState(false);
   const [backupStatus, setBackupStatus] = useState<any>(null);
   const [isCheckingBackup, setIsCheckingBackup] = useState(false);
+
+  // PostgreSQL Backup & Restore Dynamic States
+  const [settingsSubTab, setSettingsSubTab] = useState<"connections" | "backups">("connections");
+  const [backupHistoryList, setBackupHistoryList] = useState<any[]>([]);
+  const [autoBackupFrequency, setAutoBackupFrequency] = useState<string>("Disabled");
+  const [validationResult, setValidationResult] = useState<any>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);
+  const [isValidatingBackup, setIsValidatingBackup] = useState(false);
+
+  const fetchBackupHistoryAndConfig = async () => {
+    try {
+      const q = `adminId=${encodeURIComponent(user?.uid || "")}&adminEmail=${encodeURIComponent(user?.email || "")}`;
+      const [historyRes, configRes] = await Promise.all([
+        fetch(`/api/backup/history?${q}`).then(res => res.json()),
+        fetch(`/api/backup/config?${q}`).then(res => res.json())
+      ]);
+      if (Array.isArray(historyRes)) {
+        setBackupHistoryList(historyRes);
+      }
+      if (configRes && configRes.frequency) {
+        setAutoBackupFrequency(configRes.frequency);
+      }
+    } catch (err) {
+      console.error("Failed to load backup history/config:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (adminTab === "settings" && settingsSubTab === "backups") {
+      fetchBackupHistoryAndConfig();
+    }
+  }, [adminTab, settingsSubTab]);
+
+  const handleFileSelectAndValidate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsValidatingBackup(true);
+    setValidationResult(null);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const parsed = JSON.parse(event.target?.result as string);
+        const response = await fetch("/api/backup/validate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-id": user?.uid || "",
+            "x-admin-email": user?.email || ""
+          },
+          body: JSON.stringify({ backupData: parsed })
+        });
+        const data = await response.json();
+        if (response.ok && data.success) {
+          setValidationResult({
+            rawPayload: parsed,
+            summary: data
+          });
+          addNotification("Backup file validated successfully. Ready to restore!", "success");
+        } else {
+          addNotification(data.error || "File validation failed.", "error");
+        }
+      } catch (err: any) {
+        addNotification("Invalid backup file format: " + err.message, "error");
+      } finally {
+        setIsValidatingBackup(false);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleApplyRestore = async () => {
+    if (!validationResult) return;
+    
+    setConfirmState({
+      isOpen: true,
+      title: "Confirm Database Restore",
+      message: "Warning: Restoring will overwrite the current database. All current records will be replaced. A safe restore backup will be recorded automatically first. Do you want to proceed?",
+      confirmText: "Restore Now",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        setIsRestoring(true);
+        addNotification("Applying safe database restore transaction...", "info");
+        try {
+          // Trigger automatic snapshot first for safe restore requirement
+          await fetch("/api/backup/history/create", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-admin-id": user?.uid || "",
+              "x-admin-email": user?.email || ""
+            }
+          });
+
+          const response = await fetch("/api/backup/restore", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-admin-id": user?.uid || "",
+              "x-admin-email": user?.email || ""
+            },
+            body: JSON.stringify({ backupData: validationResult.rawPayload })
+          });
+          
+          const data = await response.json();
+          if (response.ok && data.success) {
+            addNotification("Database restored perfectly. Refreshing dashboard...", "success");
+            setValidationResult(null);
+            setTimeout(() => {
+              window.location.reload();
+            }, 2000);
+          } else {
+            addNotification(data.error || "Restore failed.", "error");
+          }
+        } catch (err: any) {
+          addNotification("Restore execution failed: " + err.message, "error");
+        } finally {
+          setIsRestoring(false);
+        }
+      }
+    });
+  };
+
+  const handleCreateBackupSnapshot = async () => {
+    setIsCreatingSnapshot(true);
+    addNotification("Creating historical system backup snapshot...", "info");
+    try {
+      const response = await fetch("/api/backup/history/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-id": user?.uid || "",
+          "x-admin-email": user?.email || ""
+        }
+      });
+      if (response.ok) {
+        addNotification("Backup snapshot recorded successfully!", "success");
+        fetchBackupHistoryAndConfig();
+      } else {
+        const data = await response.json();
+        addNotification(data.error || "Snapshot generation failed.", "error");
+      }
+    } catch (err: any) {
+      addNotification("Snapshot failed: " + err.message, "error");
+    } finally {
+      setIsCreatingSnapshot(false);
+    }
+  };
+
+  const handleDeleteBackup = async (filename: string) => {
+    setConfirmState({
+      isOpen: true,
+      title: "Delete Backup Archive",
+      message: `Are you sure you want to permanently delete backup archive "${filename}"? This action is irreversible.`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        try {
+          const response = await fetch("/api/backup/history/delete", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-admin-id": user?.uid || "",
+              "x-admin-email": user?.email || ""
+            },
+            body: JSON.stringify({ filename })
+          });
+          if (response.ok) {
+            addNotification("Backup file deleted from storage.", "success");
+            fetchBackupHistoryAndConfig();
+          } else {
+            const data = await response.json();
+            addNotification(data.error || "Deletion failed.", "error");
+          }
+        } catch (err: any) {
+          addNotification("Delete failed: " + err.message, "error");
+        }
+      }
+    });
+  };
+
+  const handleRestoreFromHistory = async (filename: string) => {
+    setConfirmState({
+      isOpen: true,
+      title: "Restore from Backup Archive",
+      message: `Are you sure you want to restore the database to historical snapshot "${filename}"? A backup snapshot of the current state will be created first, and then the selected archive will be fully applied. This will restart the dashboard!`,
+      confirmText: "Apply Restore",
+      cancelText: "Cancel",
+      type: "warning",
+      onConfirm: async () => {
+        setIsRestoring(true);
+        addNotification("Restoring from historical archive point...", "info");
+        try {
+          // Trigger dynamic pre-restore backup snapshot first
+          await fetch("/api/backup/history/create", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-admin-id": user?.uid || "",
+              "x-admin-email": user?.email || ""
+            }
+          });
+
+          const response = await fetch("/api/backup/history/restore", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-admin-id": user?.uid || "",
+              "x-admin-email": user?.email || ""
+            },
+            body: JSON.stringify({ filename })
+          });
+          if (response.ok) {
+            addNotification("Database restored and validated. Syncing portal...", "success");
+            setTimeout(() => {
+              window.location.reload();
+            }, 2000);
+          } else {
+            const data = await response.json();
+            addNotification(data.error || "Restore execution failed.", "error");
+          }
+        } catch (err: any) {
+          addNotification("Restore failed: " + err.message, "error");
+        } finally {
+          setIsRestoring(false);
+        }
+      }
+    });
+  };
+
+  const handleSaveAutoBackupConfig = async (freq: string) => {
+    setAutoBackupFrequency(freq);
+    try {
+      const response = await fetch("/api/backup/config", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-id": user?.uid || "",
+          "x-admin-email": user?.email || ""
+        },
+        body: JSON.stringify({ frequency: freq })
+      });
+      if (response.ok) {
+        addNotification(`Automated database backup interval configured: ${freq}`, "success");
+      } else {
+        const data = await response.json();
+        addNotification(data.error || "Config failed.", "error");
+      }
+    } catch (err: any) {
+      addNotification("Configuration save failed: " + err.message, "error");
+    }
+  };
 
   // Scheduler History filter states
   const [schedulerCampaignFilter, setSchedulerCampaignFilter] = useState<string>("all");
@@ -348,6 +682,128 @@ export default function App() {
       loadAllAdminData();
     }
   }, [user, adminRole]);
+
+  // Poll active campaign progress every 3 seconds if an admin is logged in
+  useEffect(() => {
+    if (!user || !adminRole) return;
+
+    const pollProgress = async () => {
+      try {
+        const res = await fetch("/api/whatsapp/active-campaign-progress");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.status !== "idle") {
+            setActiveCampaignProgress(data);
+          } else {
+            setActiveCampaignProgress(null);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch active campaign progress:", err);
+      }
+    };
+
+    pollProgress(); // run immediately
+    const interval = setInterval(pollProgress, 3000);
+    return () => clearInterval(interval);
+  }, [user, adminRole]);
+
+  // Parse date string into a local Date object to avoid timezone shifts
+  const parseLocalDate = (dateStr: string) => {
+    const parts = dateStr.split("-");
+    if (parts.length === 3) {
+      return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+    return new Date();
+  };
+
+  const handlePrevDay = () => {
+    const current = parseLocalDate(dashboardDate);
+    current.setDate(current.getDate() - 1);
+    const year = current.getFullYear();
+    const month = String(current.getMonth() + 1).padStart(2, '0');
+    const day = String(current.getDate()).padStart(2, '0');
+    setDashboardDate(`${year}-${month}-${day}`);
+  };
+
+  const handleNextDay = () => {
+    const current = parseLocalDate(dashboardDate);
+    current.setDate(current.getDate() + 1);
+    const year = current.getFullYear();
+    const month = String(current.getMonth() + 1).padStart(2, '0');
+    const day = String(current.getDate()).padStart(2, '0');
+    setDashboardDate(`${year}-${month}-${day}`);
+  };
+
+  const handleToday = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    setDashboardDate(`${year}-${month}-${day}`);
+  };
+
+  // Fetch dashboard attendance and stats for specific date
+  useEffect(() => {
+    if (!user || !adminRole || viewMode !== "admin" || adminTab !== "dashboard") return;
+
+    let active = true;
+    const fetchDashboardAttendance = async () => {
+      setLoadingDashboardAttendance(true);
+      try {
+        const q = `adminId=${user?.uid || user?.id || ""}&adminEmail=${encodeURIComponent(user?.email || "")}`;
+        const res = await fetch(`/api/attendance?date=${dashboardDate}&${q}`);
+        if (res.ok && active) {
+          const data = await res.json();
+          if (data && data.records && data.stats) {
+            setDashboardAttendanceRecords(data.records);
+            setDashboardStats(data.stats);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch dashboard attendance by date:", err);
+      } finally {
+        if (active) {
+          setLoadingDashboardAttendance(false);
+        }
+      }
+    };
+
+    fetchDashboardAttendance();
+    return () => {
+      active = false;
+    };
+  }, [user, adminRole, viewMode, adminTab, dashboardDate, attendanceHistory]);
+
+  // Periodic fetcher for background queue when tab is active
+  useEffect(() => {
+    if (viewMode === "admin" && adminTab === "queue" && user) {
+      let active = true;
+      const fetchQueueData = async () => {
+        try {
+          const [itemsRes, progRes] = await Promise.all([
+            fetch(`/api/whatsapp/queue?status=${queueFilterStatus}&messageType=${queueFilterType}&search=${encodeURIComponent(queueSearch)}`),
+            fetch(`/api/whatsapp/queue/progress`)
+          ]);
+          if (itemsRes.ok && progRes.ok && active) {
+            const items = await itemsRes.json();
+            const prog = await progRes.json();
+            setQueueItems(items);
+            setQueueProgress(prog);
+          }
+        } catch (err) {
+          console.error("Error fetching queue data:", err);
+        }
+      };
+
+      fetchQueueData();
+      const intervalId = setInterval(fetchQueueData, 3000);
+      return () => {
+        active = false;
+        clearInterval(intervalId);
+      };
+    }
+  }, [viewMode, adminTab, queueFilterStatus, queueFilterType, queueSearch, user]);
 
   async function fetchBaileysStatus() {
     try {
@@ -680,15 +1136,23 @@ export default function App() {
 
       const responses = await Promise.all(
         endpoints.map((ep) =>
-          fetch(ep).then(async (res) => {
-            const data = await res.json();
-            if (!res.ok) {
-              throw new Error(
-                `${ep} failed with status ${res.status}: ${data?.error || res.statusText}`,
-              );
-            }
-            return data;
-          }),
+          fetch(ep)
+            .then(async (res) => {
+              if (!res.ok) {
+                console.error(`Endpoint ${ep} failed with status ${res.status}`);
+                return null;
+              }
+              try {
+                return await res.json();
+              } catch (e) {
+                console.error(`Failed to parse JSON for ${ep}`, e);
+                return null;
+              }
+            })
+            .catch((err) => {
+              console.error(`Network or fetch error for ${ep}:`, err);
+              return null;
+            })
         ),
       );
 
@@ -761,6 +1225,12 @@ export default function App() {
           (b.executedAt || "").localeCompare(a.executedAt || ""),
         );
         setSchedulerRuns(sortedRuns);
+        if (selectedRunForDetails) {
+          const freshRun = sortedRuns.find(r => r.id === selectedRunForDetails.id);
+          if (freshRun) {
+            setSelectedRunForDetails(freshRun);
+          }
+        }
       }
       
       if (Array.isArray(quickRepliesData)) {
@@ -1546,6 +2016,44 @@ export default function App() {
     });
   };
 
+  const handleDeleteWhatsAppLog = (logItem: any) => {
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied. Pastors cannot modify logs.", "error");
+      return;
+    }
+
+    setConfirmState({
+      isOpen: true,
+      title: "Delete WhatsApp Log Entry",
+      message: `Are you sure you want to permanently delete the WhatsApp log entry #${logItem.id ? logItem.id.slice(0, 8) : "Adhoc"} for ${logItem.personName || "the recipient"}?\nThis action cannot be undone.`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      type: "danger",
+      onConfirm: async () => {
+        try {
+          const response = await fetch(`/api/whatsapp/logs/${logItem.id}`, {
+            method: "DELETE",
+            headers: { 
+              "Content-Type": "application/json",
+              "x-user-id": user?.uid || "",
+              "x-user-email": user?.email || ""
+            },
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "Failed to delete log entry.");
+          }
+
+          addNotification("WhatsApp log entry successfully deleted!", "success");
+          await refreshWhatsAppLogs();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
+  };
+
   // Save or update Quick Reply Template
   const handleSaveQuickReply = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1873,6 +2381,58 @@ export default function App() {
 
           addNotification(
             `Bulk retry completed! Success: ${data.processedCount}, Failed: ${data.failedCount}`,
+            data.failedCount > 0 ? "error" : "success"
+          );
+          await loadAllAdminData();
+        } catch (err: any) {
+          addNotification(err.message, "error");
+        }
+      },
+    });
+  };
+
+  // Batch retry failed WhatsApp messages in a specific batch
+  const handleBatchRetry = (batchLabel: string, campaignRunId?: string, messageType?: string, dateSent?: string) => {
+    if (!batchLabel) {
+      addNotification("Batch label is required to trigger a batch-retry.", "error");
+      return;
+    }
+
+    if (adminRole === "Pastor") {
+      addNotification("Access Denied: Pastors cannot trigger campaigns or message resends.", "error");
+      return;
+    }
+
+    setConfirmState({
+      isOpen: true,
+      title: `Retry Failed Messages in ${batchLabel}`,
+      message: `Are you sure you want to retry sending failed messages from ${batchLabel}? This will attempt to re-send only the failed messages in this batch using the Meta WhatsApp Business API.`,
+      confirmText: `Retry ${batchLabel}`,
+      cancelText: "Cancel",
+      type: "warning",
+      onConfirm: async () => {
+        addNotification(`Initiating batch retry for ${batchLabel}...`, "info");
+        try {
+          const response = await fetch("/api/whatsapp/batch-retry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              campaignRunId: campaignRunId || undefined,
+              batchLabel,
+              messageType: messageType || undefined,
+              dateSent: dateSent || undefined,
+              adminEmail: user?.email,
+              adminId: user?.uid || user?.id,
+            }),
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Batch retry failed.");
+          }
+
+          addNotification(
+            `Batch retry for ${batchLabel} completed! Success: ${data.processedCount}, Failed: ${data.failedCount}`,
             data.failedCount > 0 ? "error" : "success"
           );
           await loadAllAdminData();
@@ -2384,8 +2944,8 @@ export default function App() {
     return whatsAppLogs.filter((log) => {
       const nameMatched = (log.personName || "")
         .toLowerCase()
-        .includes((searchQuery || "").toLowerCase());
-      const phoneMatched = (log.whatsAppNumber || "").includes(searchQuery || "");
+        .includes((campaignSearchQuery || "").toLowerCase());
+      const phoneMatched = (log.whatsAppNumber || "").includes(campaignSearchQuery || "");
       
       let matchesType = true;
       if (campaignTypeFilter !== "all") {
@@ -2784,6 +3344,17 @@ export default function App() {
               >
                 ⏰ Scheduler History
               </button>
+              <button
+                type="button"
+                onClick={() => setAdminTab("queue")}
+                className={`py-2 px-4 rounded-xl text-xs sm:text-sm font-bold tracking-tight shrink-0 transition-all cursor-pointer ${
+                  adminTab === "queue"
+                    ? "bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+                }`}
+              >
+                ⚡ Message Queue
+              </button>
               {adminRole === "Super Admin" && (
                 <button
                   type="button"
@@ -2815,6 +3386,91 @@ export default function App() {
               {/* 1. MAIN SUMMARY & ANALYTICS CHARTS TAB */}
               {adminTab === "dashboard" && (
                 <div className="space-y-6" id="dashboard-tab-panel">
+                  {/* Attendance Date Selector */}
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 rounded-2xl shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 no-print" id="attendance-dashboard-date-selector">
+                    <div>
+                      <h2 className="text-base font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+                        Attendance Service Date
+                      </h2>
+                      <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
+                        Viewing statistics and records for service date: <span className="font-bold text-blue-600 dark:text-blue-400">{dashboardDate}</span>
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={handlePrevDay}
+                        className="py-2 px-3 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-2xs"
+                      >
+                        ← Previous Day
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleToday}
+                        className="py-2 px-3.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900 text-blue-600 dark:text-blue-400 text-xs font-bold rounded-xl transition-all cursor-pointer border border-blue-200/50 dark:border-blue-900/30 shadow-2xs"
+                      >
+                        Today
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleNextDay}
+                        className="py-2 px-3 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-2xs"
+                      >
+                        Next Day →
+                      </button>
+
+                      <div className="h-6 w-[1px] bg-slate-200/60 dark:bg-slate-800 hidden sm:block" />
+
+                      <input
+                        type="date"
+                        value={dashboardDate}
+                        onChange={(e) => setDashboardDate(e.target.value)}
+                        className="p-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer shadow-2xs"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Active Campaign Progress Banner */}
+                  {activeCampaignProgress && (
+                    <div className="bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-blue-500/10 dark:from-indigo-950/30 dark:via-purple-950/30 dark:to-blue-950/30 border border-indigo-200/50 dark:border-indigo-850 p-5 rounded-3xl shadow-xs animate-pulse flex flex-col md:flex-row items-start md:items-center justify-between gap-4" id="active-campaign-progress-banner">
+                      <div className="space-y-1 w-full md:max-w-xl">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-ping shrink-0" />
+                          <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest">Active Campaign Transmission</span>
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 font-display">
+                          {activeCampaignProgress.campaignType}
+                        </h4>
+                        <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 font-medium">
+                          <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider font-mono">
+                            {activeCampaignProgress.currentBatch || "Batching..."}
+                          </span>
+                          <span>•</span>
+                          <span>Progress: {activeCampaignProgress.totalProcessed} / {activeCampaignProgress.totalTargeted} members</span>
+                        </div>
+                        {/* Progress Bar Track */}
+                        <div className="w-full bg-slate-200 dark:bg-slate-800 h-2.5 rounded-full mt-3 overflow-hidden">
+                          <div 
+                            className="bg-gradient-to-r from-indigo-500 to-purple-500 h-full rounded-full transition-all duration-500"
+                            style={{ width: `${Math.min(100, Math.max(0, (activeCampaignProgress.totalProcessed / (activeCampaignProgress.totalTargeted || 1)) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div className="shrink-0 flex flex-col items-end gap-1 text-right">
+                        <span className="text-xl font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                          {Math.round((activeCampaignProgress.totalProcessed / (activeCampaignProgress.totalTargeted || 1)) * 100)}%
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                          Sending Batch {activeCampaignProgress.currentBatch?.replace("Batch ", "")}: {activeCampaignProgress.currentProgress}/{activeCampaignProgress.totalInBatch}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* KPI Panels Grid */}
                   <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 no-print">
                     <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-4 sm:p-5 rounded-2xl shadow-sm flex items-center gap-4">
@@ -2823,7 +3479,7 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {stats.totalMembers || 0}
+                          {dashboardStats.totalMembers || stats.totalMembers || 0}
                         </span>
                         <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Total Members
@@ -2837,7 +3493,7 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {stats.totalChildren || 0}
+                          {dashboardStats.totalChildren || stats.totalChildren || 0}
                         </span>
                         <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Total Kids
@@ -2851,7 +3507,7 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {stats.totalWorkers || 0}
+                          {dashboardStats.totalWorkers || stats.totalWorkers || 0}
                         </span>
                         <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                           Total Workers
@@ -2865,10 +3521,10 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {(stats.membersPresent || 0) + (stats.workersPresent || 0) + (stats.childrenPresent || 0)}
+                          {(dashboardStats.membersPresent || 0) + (dashboardStats.workersPresent || 0) + (dashboardStats.childrenPresent || 0)}
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                          Present Active Today
+                          Present ({dashboardDate})
                         </span>
                       </div>
                     </div>
@@ -2879,10 +3535,10 @@ export default function App() {
                       </div>
                       <div>
                         <span className="block text-2xl font-bold font-display text-slate-800 dark:text-slate-100">
-                          {(stats.absentMembers || 0) + (stats.absentWorkers || 0) + (stats.absentChildren || 0)}
+                          {(dashboardStats.absentMembers || 0) + (dashboardStats.absentWorkers || 0) + (dashboardStats.absentChildren || 0)}
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                          Absent Today
+                          Absent ({dashboardDate})
                         </span>
                       </div>
                     </div>
@@ -3200,6 +3856,81 @@ export default function App() {
                     );
                   })()}
 
+                  {/* Date-Specific Attendance Table Card */}
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-5 sm:p-6 rounded-2xl shadow-sm space-y-4" id="dashboard-date-attendance-table-card">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-50 dark:border-slate-850 pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center gap-1.5">
+                          <CheckCircle size={16} className="text-emerald-500" />
+                          <span>Roster Attendance for {dashboardDate}</span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Showing all check-ins recorded for this selected date.
+                        </p>
+                      </div>
+                      <span className="text-xs font-bold font-mono px-2.5 py-1 bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 rounded-full">
+                        {dashboardAttendanceRecords.length} present
+                      </span>
+                    </div>
+
+                    {loadingDashboardAttendance ? (
+                      <div className="py-8 text-center text-xs text-slate-400 font-medium flex items-center justify-center gap-2">
+                        <span className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                        <span>Fetching date attendance...</span>
+                      </div>
+                    ) : dashboardAttendanceRecords.length === 0 ? (
+                      <div className="py-8 text-center text-xs text-slate-400 italic bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-850">
+                        No attendance records logged for {dashboardDate}.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-150 dark:border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                              <th className="py-3 px-3">Name</th>
+                              <th className="py-3 px-3">Role / Dept</th>
+                              <th className="py-3 px-3">WhatsApp</th>
+                              <th className="py-3 px-3">Event / Program</th>
+                              <th className="py-3 px-3">Time</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {dashboardAttendanceRecords.map((item: any) => (
+                              <tr
+                                key={item.id}
+                                className="border-b border-slate-100 dark:border-slate-850 hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors"
+                              >
+                                <td className="py-2.5 px-3 font-semibold text-slate-800 dark:text-slate-200">
+                                  {item.firstName} {item.lastName}
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                    item.personType === "worker"
+                                      ? "bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400"
+                                      : item.personType === "chiden" || item.personType === "children"
+                                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                                      : "bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400"
+                                  }`}>
+                                    {item.role || (item.personType === "worker" ? "Worker" : item.personType === "chiden" ? "Kid" : "Member")}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 font-mono text-slate-500 dark:text-slate-400">
+                                  {item.whatsAppNumber || "N/A"}
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400 font-medium">
+                                  {item.eventType || "Sunday Experience"}
+                                </td>
+                                <td className="py-2.5 px-3 font-mono text-slate-400">
+                                  {item.attendedAtTime ? new Date(item.attendedAtTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Dynamic triggers for Dev check/automated comparison */}
                   <div className="bg-blue-50/50 dark:bg-slate-900 border border-blue-150 dark:border-slate-880 p-5 rounded-2xl flex flex-col gap-4 no-print shadow-sm">
                     <div className="flex gap-3">
@@ -3355,6 +4086,13 @@ export default function App() {
                   className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-6 sm:p-8 rounded-2xl shadow-sm"
                   id="qr-tickets-tab-panel"
                 >
+                  <button
+                    type="button"
+                    onClick={() => setAdminTab("dashboard")}
+                    className="mb-4 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm no-print"
+                  >
+                    ← Back to Dashboard
+                  </button>
                   <div className="max-w-xl mb-6">
                     <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 mb-1.5">
                       <QrCode size={20} className="text-blue-500" />
@@ -3377,6 +4115,15 @@ export default function App() {
               {/* 3. ROSTERS RECOGNITION REGISTERS TAB */}
               {adminTab === "registers" && (
                 <div className="space-y-6" id="registers-tab-panel">
+                  <div className="no-print">
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm"
+                    >
+                      ← Back to Dashboard
+                    </button>
+                  </div>
                   {/* Inline sub tab options */}
                   <div className="flex justify-between items-center no-print">
                     <div className="flex gap-1.5 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/40 dark:border-slate-850">
@@ -4411,6 +5158,13 @@ export default function App() {
               {adminTab === "absentees" && (
                 <div className="space-y-6" id="absentees-tab-panel">
                   <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-6 rounded-2xl shadow-sm no-print">
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="mb-4 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm no-print"
+                    >
+                      ← Back to Dashboard
+                    </button>
                     <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 mb-1">
                       Absent Members and Workers List (Sunday Highlight)
                     </h2>
@@ -4836,6 +5590,13 @@ export default function App() {
                   {/* Title & Stats Overview row */}
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                     <div>
+                      <button
+                        type="button"
+                        onClick={() => setAdminTab(prevAdminTab)}
+                        className="mb-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm no-print"
+                      >
+                        ← Back to Previous Section
+                      </button>
                       <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                         Message Logs & Campaign Manager
                       </h2>
@@ -4958,6 +5719,89 @@ export default function App() {
                         )();
                       })()}
 
+                      {/* Failed Batches Requiring Attention */}
+                      {(() => {
+                        const getFailedBatches = () => {
+                          const failedMap: { [key: string]: { 
+                            batchLabel: string; 
+                            campaignRunId?: string; 
+                            messageType?: string; 
+                            dateSent?: string; 
+                            failedCount: number; 
+                          } } = {};
+
+                          whatsAppLogs.forEach(log => {
+                            if (log.deliveryStatus === "Failed" && log.batchLabel) {
+                              const key = `${log.batchLabel}_${log.campaignRunId || log.messageType || ""}_${log.dateSent || ""}`;
+                              if (!failedMap[key]) {
+                                failedMap[key] = {
+                                  batchLabel: log.batchLabel,
+                                  campaignRunId: log.campaignRunId,
+                                  messageType: log.messageType,
+                                  dateSent: log.dateSent,
+                                  failedCount: 0,
+                                };
+                              }
+                              failedMap[key].failedCount++;
+                            }
+                          });
+
+                          return Object.values(failedMap);
+                        };
+
+                        const failedBatches = getFailedBatches();
+                        if (failedBatches.length === 0) return null;
+
+                        return (
+                          <div className="bg-rose-50/50 dark:bg-rose-950/10 border border-rose-200 dark:border-rose-900/50 p-5 rounded-2xl space-y-3 shadow-xs" id="failed-batches-attention-box">
+                            <div className="flex items-center gap-2">
+                              <span className="p-1 bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg">
+                                <AlertTriangle size={15} />
+                              </span>
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100 font-display">
+                                  Failed Batches Requiring Attention
+                                </h4>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                                  These message batches encountered delivery errors. You can retry the failed messages in each batch.
+                                </p>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                              {failedBatches.map((batch, idx) => (
+                                <div key={idx} className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 p-3.5 rounded-xl flex flex-col justify-between gap-3 shadow-xs">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 font-mono bg-indigo-50 dark:bg-indigo-950/20 px-2 py-0.5 rounded-lg">
+                                        📦 {batch.batchLabel}
+                                      </span>
+                                      <span className="text-[10px] font-bold text-rose-600 bg-rose-50 dark:bg-rose-950/30 dark:text-rose-400 px-2 py-0.5 rounded-lg animate-pulse">
+                                        {batch.failedCount} Failed
+                                      </span>
+                                    </div>
+                                    <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate pt-1">
+                                      {batch.messageType || "Adhoc Campaign"}
+                                    </h5>
+                                    {batch.dateSent && (
+                                      <div className="text-[10px] text-slate-400 font-mono font-medium">
+                                        Sent on: {batch.dateSent}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleBatchRetry(batch.batchLabel, batch.campaignRunId, batch.messageType, batch.dateSent)}
+                                    className="w-full py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-all duration-150"
+                                  >
+                                    <RefreshCw size={11} /> Retry {batch.batchLabel} Failed
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-4 rounded-xl flex flex-col lg:flex-row gap-3 items-center shadow-sm no-print">
                         {/* Search */}
                         <div className="relative flex-1 w-full">
@@ -4968,8 +5812,8 @@ export default function App() {
                           <input
                             type="text"
                             placeholder="Search campaign logs by spelling attendee name or phone..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            value={campaignSearchQuery}
+                            onChange={(e) => setCampaignSearchQuery(e.target.value)}
                             className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl text-xs sm:text-sm text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           />
                         </div>
@@ -5084,6 +5928,11 @@ export default function App() {
                                   <div>
                                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Campaign Type</span>
                                     <span className="font-bold text-slate-600 dark:text-slate-450">{log.messageType || "Adhoc Direct"}</span>
+                                    {log.batchLabel && (
+                                      <span className="block text-[10px] font-bold text-indigo-600 dark:text-indigo-400 font-mono mt-0.5">
+                                        📦 {log.batchLabel}
+                                      </span>
+                                    )}
                                   </div>
                                   <div>
                                     <span className="text-slate-400 block text-[9px] uppercase font-bold">Date Dispatch</span>
@@ -5104,7 +5953,16 @@ export default function App() {
                                     </span>
                                   </div>
                                 </div>
-                                <div className="pt-2 border-t border-slate-100 dark:border-slate-850 flex justify-end no-print">
+                                <div className="pt-2 border-t border-slate-100 dark:border-slate-850 flex justify-end gap-2 no-print">
+                                  {adminRole !== "Pastor" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteWhatsAppLog(log)}
+                                      className="px-2.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
+                                    >
+                                      <Trash2 size={11} /> Delete
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => handleWhatsAppResend(log)}
@@ -5176,17 +6034,24 @@ export default function App() {
                                         {log.whatsAppNumber}
                                       </td>
                                       <td className="py-3 px-4">
-                                        <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                          log.messageType === "Saturday Encouragement" 
-                                            ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
-                                            : log.messageType === "Wednesday Word Cafe Reminder"
-                                              ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
-                                              : log.messageType === "Sunday Absentee Follow-Up"
-                                                ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
-                                                : "bg-slate-100 text-slate-700 dark:bg-slate-950/20 dark:text-slate-400"
-                                        }`}>
-                                          {log.messageType || "Adhoc Direct"}
-                                        </span>
+                                        <div className="flex flex-col gap-1 items-start">
+                                          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                            log.messageType === "Saturday Encouragement" 
+                                              ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950/20 dark:text-indigo-400"
+                                              : log.messageType === "Wednesday Word Cafe Reminder"
+                                                ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400"
+                                                : log.messageType === "Sunday Absentee Follow-Up"
+                                                  ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400"
+                                                  : "bg-slate-100 text-slate-700 dark:bg-slate-950/20 dark:text-slate-400"
+                                          }`}>
+                                            {log.messageType || "Adhoc Direct"}
+                                          </span>
+                                          {log.batchLabel && (
+                                            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 font-mono flex items-center gap-1">
+                                              📦 {log.batchLabel}
+                                            </span>
+                                          )}
+                                        </div>
                                       </td>
                                       <td
                                         className="py-3 px-4 max-w-xs truncate text-[11px] leading-relaxed"
@@ -5237,13 +6102,24 @@ export default function App() {
                                         {log.failedStatus || <span className="text-slate-350 dark:text-slate-600">—</span>}
                                       </td>
                                       <td className="py-3 px-4 no-print text-right">
-                                        <button
-                                          type="button"
-                                          onClick={() => handleWhatsAppResend(log)}
-                                          className="p-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
-                                        >
-                                          <Send size={11} /> Resend
-                                        </button>
+                                        <div className="flex justify-end gap-1.5">
+                                          {adminRole !== "Pastor" && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleDeleteWhatsAppLog(log)}
+                                              className="p-1 px-2.5 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
+                                            >
+                                              <Trash2 size={11} /> Delete
+                                            </button>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleWhatsAppResend(log)}
+                                            className="p-1 px-2.5 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/20 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-all duration-150 border border-slate-100 dark:border-slate-800"
+                                          >
+                                            <Send size={11} /> Resend
+                                          </button>
+                                        </div>
                                       </td>
                                     </tr>
                                   );
@@ -5427,10 +6303,44 @@ export default function App() {
 
               {/* 6. WHATSAPP META BUSINESS PARAMS TAB */}
               {adminTab === "settings" && adminRole === "Super Admin" && (
-                <div
-                  className="grid grid-cols-1 lg:grid-cols-3 gap-6"
-                  id="settings-tab-panel"
-                >
+                <div className="space-y-6" id="settings-tab-panel">
+                  <div className="no-print flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm"
+                    >
+                      ← Back to Dashboard
+                    </button>
+                    
+                    {/* Dynamic Settings Switcher Tab */}
+                    <div className="bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/40 dark:border-slate-850 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setSettingsSubTab("connections")}
+                        className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          settingsSubTab === "connections"
+                            ? "bg-white dark:bg-slate-850 text-indigo-600 dark:text-indigo-400 shadow-sm"
+                            : "text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+                        }`}
+                      >
+                        🔌 Connections & SMTP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSettingsSubTab("backups")}
+                        className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          settingsSubTab === "backups"
+                            ? "bg-white dark:bg-slate-850 text-indigo-600 dark:text-indigo-400 shadow-sm"
+                            : "text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+                        }`}
+                      >
+                        🗄️ Backup & Restore
+                      </button>
+                    </div>
+                  </div>
+                  {settingsSubTab === "connections" ? (
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   {/* Meta edit settings form */}
                   <div className="lg:col-span-2 space-y-6">
                     {/* Baileys WhatsApp Connection Manager */}
@@ -6116,14 +7026,29 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              ) : (
+                <BackupRestoreManager
+                  user={user}
+                  addNotification={addNotification}
+                  setConfirmState={setConfirmState}
+                />
               )}
+            </div>
+          )}
 
-              {/* 7. ADMINS ROLES & AUDIT LOGS TAB */}
+            {/* 7. ADMINS ROLES & AUDIT LOGS TAB */}
               {adminTab === "roles" && (
-                <div
-                  className="grid grid-cols-1 lg:grid-cols-12 gap-6"
-                  id="roles-tab-panel"
-                >
+                <div className="space-y-6" id="roles-tab-panel">
+                  <div className="no-print">
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm"
+                    >
+                      ← Back to Dashboard
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                   {/* Authorized administrators list */}
                   <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
                     <div className="flex justify-between items-center mb-4">
@@ -6217,8 +7142,8 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* SUNDAY SCHEDULER TESTING DIALOG RESULT */}
             {showSchedulerResult && (
@@ -6315,12 +7240,19 @@ export default function App() {
               </div>
             )}
 
-            {/* 8. AUTOMATED ACTION HISTORY / SCHEDULER HISTORY TAB */}
+          {/* 8. AUTOMATED ACTION HISTORY / SCHEDULER HISTORY TAB */}
             {adminTab === "schedulerHistory" && (
               <div className="space-y-6 animate-in fade-in duration-200" id="scheduler-history-tab-panel">
                 {/* Title & Info */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div>
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="mb-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm no-print"
+                    >
+                      ← Back to Dashboard
+                    </button>
                     <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                       <Clock size={20} className="text-indigo-500 animate-pulse" />
                       Automated Action History
@@ -6337,6 +7269,190 @@ export default function App() {
                     <RefreshCw size={12} /> Sync Log History
                   </button>
                 </div>
+
+                {/* Real-time Status Summary */}
+                {(() => {
+                  const summary = (() => {
+                    let totalSuccessful = 0;
+                    let totalFailed = 0;
+                    const blocksWithFailures: {
+                      runId: string;
+                      campaignType: string;
+                      executedAt: string;
+                      batchLabel: string;
+                      failedCount: number;
+                      totalCount: number;
+                    }[] = [];
+
+                    schedulerRuns.forEach(run => {
+                      totalSuccessful += (run.processedCount || 0);
+                      totalFailed += (run.failedCount || 0);
+
+                      if (run.failedCount > 0) {
+                        const batchCounts: { [batch: string]: { failed: number; total: number } } = {};
+                        const targetsList = run.targets || run.logs || [];
+                        
+                        targetsList.forEach(t => {
+                          const bLabel = t.batchLabel || "Batch A";
+                          if (!batchCounts[bLabel]) {
+                            batchCounts[bLabel] = { failed: 0, total: 0 };
+                          }
+                          batchCounts[bLabel].total++;
+                          if (t.status === "Failed") {
+                            batchCounts[bLabel].failed++;
+                          }
+                        });
+
+                        Object.entries(batchCounts).forEach(([batchLabel, counts]) => {
+                          if (counts.failed > 0) {
+                            blocksWithFailures.push({
+                              runId: run.id,
+                              campaignType: run.campaignType,
+                              executedAt: run.executedAt,
+                              batchLabel,
+                              failedCount: counts.failed,
+                              totalCount: counts.total
+                            });
+                          }
+                        });
+                      }
+                    });
+
+                    const totalCount = totalSuccessful + totalFailed;
+                    const overallSuccessRate = totalCount > 0 ? (totalSuccessful / totalCount) * 100 : 100;
+
+                    return {
+                      overallSuccessRate: Math.round(overallSuccessRate),
+                      totalSuccessful,
+                      totalFailed,
+                      blocksWithFailures
+                    };
+                  })();
+
+                  return (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="scheduler-history-status-summary">
+                      {/* Left: Overall Success Rate Circular Visual */}
+                      <div className="lg:col-span-4 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-5 rounded-2xl shadow-sm flex flex-col items-center justify-center text-center space-y-4">
+                        <h4 className="text-xs font-bold text-slate-450 uppercase tracking-widest self-start">
+                          Overall success rate
+                        </h4>
+                        
+                        <div className="relative flex items-center justify-center w-28 h-28">
+                          {/* Svg Circle Track */}
+                          <svg className="w-full h-full transform -rotate-90">
+                            <circle
+                              cx="56"
+                              cy="56"
+                              r="48"
+                              className="stroke-slate-100 dark:stroke-slate-800"
+                              strokeWidth="8"
+                              fill="transparent"
+                            />
+                            <circle
+                              cx="56"
+                              cy="56"
+                              r="48"
+                              className={`transition-all duration-1000 ${
+                                summary.overallSuccessRate >= 95
+                                  ? "stroke-emerald-500"
+                                  : summary.overallSuccessRate >= 80
+                                    ? "stroke-amber-500"
+                                    : "stroke-rose-500"
+                              }`}
+                              strokeWidth="8"
+                              fill="transparent"
+                              strokeDasharray={2 * Math.PI * 48}
+                              strokeDashoffset={2 * Math.PI * 48 * (1 - summary.overallSuccessRate / 100)}
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          <div className="absolute flex flex-col items-center justify-center">
+                            <span className="text-2xl font-black text-slate-800 dark:text-slate-100 font-mono">
+                              {summary.overallSuccessRate}%
+                            </span>
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                              Delivered
+                            </span>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                          {summary.totalSuccessful} out of {summary.totalSuccessful + summary.totalFailed} total scheduled messages successfully transmitted.
+                        </p>
+                      </div>
+
+                      {/* Right: Blocks Requiring Attention */}
+                      <div className="lg:col-span-8 bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-5 rounded-2xl shadow-sm flex flex-col justify-between space-y-4">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-450 uppercase tracking-widest mb-3 flex items-center gap-2">
+                            <span>⚠️ Blocks Requiring Attention</span>
+                            {summary.blocksWithFailures.length > 0 && (
+                              <span className="bg-rose-100 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-[10px] px-2 py-0.5 rounded-full font-bold animate-pulse">
+                                {summary.blocksWithFailures.length} Action Needed
+                              </span>
+                            )}
+                          </h4>
+
+                          {summary.blocksWithFailures.length === 0 ? (
+                            <div className="py-8 flex flex-col items-center justify-center text-center space-y-2 border border-dashed border-slate-150 dark:border-slate-800 rounded-xl bg-slate-50/30 dark:bg-slate-950/10">
+                              <div className="p-2 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 rounded-full">
+                                <CheckCheck size={20} />
+                              </div>
+                              <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                All message blocks delivered successfully!
+                              </p>
+                              <p className="text-[10px] text-slate-400">
+                                There are currently no failed scheduler blocks requiring attention.
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="max-h-48 overflow-y-auto space-y-2.5 pr-1">
+                              {summary.blocksWithFailures.map((block, idx) => {
+                                const formattedDate = new Date(block.executedAt).toLocaleString([], {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit"
+                                });
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-rose-50/30 dark:bg-rose-950/5 border border-rose-100/70 dark:border-rose-900/30 rounded-xl"
+                                  >
+                                    <div className="space-y-0.5">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                                          📦 {block.batchLabel}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400 font-medium">
+                                          • {formattedDate}
+                                        </span>
+                                      </div>
+                                      <h5 className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate max-w-sm">
+                                        {block.campaignType}
+                                      </h5>
+                                      <div className="text-[10px] text-rose-600 dark:text-rose-400 font-bold flex items-center gap-1">
+                                        <AlertCircle size={10} />
+                                        {block.failedCount} / {block.totalCount} messages failed to send
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleBatchRetry(block.batchLabel, block.runId)}
+                                      className="py-1.5 px-3 bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 shrink-0 cursor-pointer transition-all duration-150 shadow-xs"
+                                    >
+                                      <RefreshCw size={10} /> Retry Block
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* KPI Summary Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" id="scheduler-history-kpis">
@@ -6514,6 +7630,309 @@ export default function App() {
                             );
                           });
                         })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {adminTab === "queue" && (
+              <div className="space-y-6 animate-in fade-in duration-200">
+                {/* Title & Info */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setAdminTab("dashboard")}
+                      className="mb-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-850 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-800 shadow-sm no-print"
+                    >
+                      ← Back to Dashboard
+                    </button>
+                    <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                      <Zap size={20} className="text-indigo-500 animate-pulse" />
+                      WhatsApp Background Message Queue Console
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Production-grade sequential sending queue. Controls delays, prevents duplicate delivery, and handles seamless server restart recovery.
+                    </p>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 self-start md:self-auto">
+                    {/* Queue Worker Status Badge */}
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                      queueProgress?.status === "sending"
+                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/30"
+                        : queueProgress?.status === "paused"
+                        ? "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-400 border-amber-100 dark:border-amber-900/30"
+                        : queueProgress?.status === "stopped"
+                        ? "bg-rose-50 text-rose-700 dark:bg-rose-950/20 dark:text-rose-400 border-rose-100 dark:border-rose-900/30"
+                        : "bg-slate-50 text-slate-600 dark:bg-slate-850 dark:text-slate-400 border-slate-200 dark:border-slate-800"
+                    }`}>
+                      <span className={`w-2 h-2 rounded-full ${
+                        queueProgress?.status === "sending"
+                          ? "bg-emerald-500 animate-ping"
+                          : queueProgress?.status === "paused"
+                          ? "bg-amber-500"
+                          : queueProgress?.status === "stopped"
+                          ? "bg-rose-500"
+                          : "bg-slate-400"
+                      }`} />
+                      Worker Loop: {queueProgress?.status ? queueProgress.status.toUpperCase() : "IDLE"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Queue Master Control Panel */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 p-5 rounded-2xl shadow-sm space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                        🎮 Queue Worker Loop Control
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Instruct the background server worker to manage sequence delivery pauses or full emergency cancellations.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      {queueProgress?.status !== "sending" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await fetch("/api/whatsapp/queue/control", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "start" })
+                            });
+                          }}
+                          className="py-2 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
+                        >
+                          <Play size={12} /> Start Worker
+                        </button>
+                      )}
+
+                      {queueProgress?.status === "sending" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await fetch("/api/whatsapp/queue/control", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "pause" })
+                            });
+                          }}
+                          className="py-2 px-3.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
+                        >
+                          <Pause size={12} /> Pause Worker
+                        </button>
+                      )}
+
+                      {queueProgress?.status === "paused" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await fetch("/api/whatsapp/queue/control", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ action: "resume" })
+                            });
+                          }}
+                          className="py-2 px-3.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
+                        >
+                          <Play size={12} /> Resume Worker
+                        </button>
+                      )}
+
+                      {(queueProgress?.status === "sending" || queueProgress?.status === "paused") && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (window.confirm("Emergency Warning: Are you sure you want to stop the entire active queue? Remaining messages will be marked as Cancelled.")) {
+                              await fetch("/api/whatsapp/queue/control", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ action: "stop" })
+                              });
+                            }
+                          }}
+                          className="py-2 px-3.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
+                        >
+                          <StopCircle size={12} /> Stop/Cancel Campaign
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Progress Stats Bento Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+                    <div className="p-3 bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <span className="text-[10px] text-slate-400 block font-semibold uppercase">Pending In Queue</span>
+                      <span className="text-lg font-black text-slate-700 dark:text-slate-200">
+                        {queueItems.filter(item => item.status === "Pending").length} messages
+                      </span>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <span className="text-[10px] text-slate-400 block font-semibold uppercase">Total Run Targeted</span>
+                      <span className="text-lg font-black text-slate-700 dark:text-slate-200">
+                        {queueProgress?.totalTargeted || 0} messages
+                      </span>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <span className="text-[10px] text-slate-400 block font-semibold uppercase">Loop Progress</span>
+                      <span className="text-lg font-black text-emerald-600 dark:text-emerald-400">
+                        {queueProgress?.totalProcessed || 0} / {queueProgress?.totalTargeted || 0}
+                      </span>
+                    </div>
+                    <div className="p-3 bg-slate-50 dark:bg-slate-950/40 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <span className="text-[10px] text-slate-400 block font-semibold uppercase">Delay Engine Status</span>
+                      <span className="text-lg font-black text-indigo-500 font-mono">
+                        {queueProgress?.delaySeconds ? `⏳ Wait ${queueProgress.delaySeconds}s` : "⚡ 15-30s Random"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filter and Table Container */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200/50 dark:border-slate-850 rounded-2xl shadow-sm overflow-hidden">
+                  {/* Filters Header */}
+                  <div className="p-4 bg-slate-50/50 dark:bg-slate-950/20 border-b border-slate-200/50 dark:border-slate-850/50 flex flex-col md:flex-row gap-3 items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-600 dark:text-slate-400">Filter Queue Entries</span>
+                      <span className="text-[10px] bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400 font-bold px-2 py-0.5 rounded">
+                        Total Shown: {queueItems.length}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                      {/* Search */}
+                      <input
+                        type="text"
+                        placeholder="Search recipient or number..."
+                        value={queueSearch}
+                        onChange={(e) => setQueueSearch(e.target.value)}
+                        className="px-3 py-1.5 w-full md:w-48 bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none"
+                      />
+
+                      {/* Status filter */}
+                      <select
+                        value={queueFilterStatus}
+                        onChange={(e) => setQueueFilterStatus(e.target.value)}
+                        className="px-3 py-1.5 bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">All Statuses</option>
+                        <option value="Pending">Pending</option>
+                        <option value="Sending">Sending</option>
+                        <option value="Sent">Sent</option>
+                        <option value="Failed">Failed</option>
+                        <option value="Cancelled">Cancelled</option>
+                      </select>
+
+                      {/* Campaign filter */}
+                      <select
+                        value={queueFilterType}
+                        onChange={(e) => setQueueFilterType(e.target.value)}
+                        className="px-3 py-1.5 bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-800 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">All Campaigns</option>
+                        <option value="Sunday Absentee Follow-Up">Sunday Absentee</option>
+                        <option value="Wednesday Word Cafe Reminder">Wednesday Word Cafe</option>
+                        <option value="Saturday Encouragement">Saturday Encouragement</option>
+                        <option value="Batch Retry">Batch Retry</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Queue Items Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-100 dark:border-slate-850 text-[10px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50 dark:bg-slate-950/10">
+                          <th className="py-3 px-4">Recipient</th>
+                          <th className="py-3 px-4">Campaign & Batch</th>
+                          <th className="py-3 px-4">Message Content</th>
+                          <th className="py-3 px-4 text-center">Status</th>
+                          <th className="py-3 px-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {queueItems.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="py-8 px-4 text-center text-xs text-slate-400 font-medium">
+                              No background queue entries found matching filters.
+                            </td>
+                          </tr>
+                        ) : (
+                          queueItems.map((item) => {
+                            const dateObj = new Date(item.createdAt);
+                            const formattedTime = dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+                            return (
+                              <tr
+                                key={item.id}
+                                className="border-b border-slate-100 dark:border-slate-850/60 hover:bg-slate-50/30 dark:hover:bg-slate-950/20 text-xs transition-colors"
+                              >
+                                <td className="py-3 px-4">
+                                  <div className="font-semibold text-slate-800 dark:text-slate-200">
+                                    {item.firstName} {item.lastName}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                    {item.whatsAppNumber} • {formattedTime}
+                                  </div>
+                                </td>
+                                <td className="py-3 px-4">
+                                  <span className="font-semibold block text-[11px] text-slate-600 dark:text-slate-400">
+                                    {item.messageType}
+                                  </span>
+                                  <span className="text-[10px] bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100/50 dark:border-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.5 rounded font-mono">
+                                    📦 {item.batchLabel || "Batch A"}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-4 max-w-xs truncate" title={item.messageContent}>
+                                  <p className="text-slate-600 dark:text-slate-400 leading-normal truncate">
+                                    {item.messageContent}
+                                  </p>
+                                </td>
+                                <td className="py-3 px-4 text-center">
+                                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border ${
+                                    item.status === "Sent"
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/30"
+                                      : item.status === "Sending"
+                                      ? "bg-blue-50 text-blue-700 border-blue-200 animate-pulse dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/30"
+                                      : item.status === "Failed"
+                                      ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/30"
+                                      : item.status === "Cancelled"
+                                      ? "bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-850 dark:text-slate-400 dark:border-slate-800"
+                                      : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/30"
+                                  }`}>
+                                    {item.status}
+                                  </span>
+                                  {item.failedReason && (
+                                    <div className="text-[9px] text-rose-500 max-w-[12rem] truncate mt-0.5 mx-auto" title={item.failedReason}>
+                                      {item.failedReason}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-3 px-4 text-right">
+                                  {item.status === "Failed" && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        await fetch("/api/whatsapp/queue/retry-item", {
+                                          method: "POST",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ id: item.id })
+                                        });
+                                      }}
+                                      className="py-1 px-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold rounded-lg border border-indigo-200/50 dark:border-indigo-850 cursor-pointer transition-all"
+                                    >
+                                      Retry Item
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -6854,17 +8273,30 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    <button
-                      onClick={() => {
-                        setSelectedRunForDetails(null);
-                        setSchedulerDetailSearch("");
-                        setSchedulerDetailStatusFilter("all");
-                      }}
-                      className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl cursor-pointer transition-all"
-                      id="close-scheduler-modal-btn"
-                    >
-                      ✕ Close
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => {
+                          setSelectedRunForDetails(null);
+                          setSchedulerDetailSearch("");
+                          setSchedulerDetailStatusFilter("all");
+                          setAdminTab(prevAdminTab);
+                        }}
+                        className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-lg transition-all inline-flex items-center gap-1.5 cursor-pointer border border-slate-200/50 dark:border-slate-750 shadow-sm"
+                      >
+                        ← Back
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedRunForDetails(null);
+                          setSchedulerDetailSearch("");
+                          setSchedulerDetailStatusFilter("all");
+                        }}
+                        className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 rounded-xl cursor-pointer transition-all"
+                        id="close-scheduler-modal-btn"
+                      >
+                        ✕ Close
+                      </button>
+                    </div>
                   </div>
 
                   {/* Modal Body */}
@@ -7009,7 +8441,19 @@ export default function App() {
                   </div>
 
                   {/* Modal Footer */}
-                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-850 flex justify-end">
+                  <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-slate-850 flex justify-between items-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedRunForDetails(null);
+                        setSchedulerDetailSearch("");
+                        setSchedulerDetailStatusFilter("all");
+                        setAdminTab(prevAdminTab);
+                      }}
+                      className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-750 dark:text-slate-300 rounded-xl text-xs font-bold tracking-tight cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      ← Back to Previous Section
+                    </button>
                     <button
                       onClick={() => {
                         setSelectedRunForDetails(null);
@@ -7643,6 +9087,7 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
         )}
       </main>
 

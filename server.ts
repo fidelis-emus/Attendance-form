@@ -7,12 +7,39 @@ import cron from "node-cron";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 import { whatsappService } from "./whatsapp-service";
+import http from "http";
+import { Server as SocketIOServer } from "socket.io";
+import { queueService } from "./whatsapp-queue";
 
 dotenv.config();
 
 const PORT = 3000;
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Sleep helper utility for rate-limiting
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+interface ActiveCampaignProgress {
+  active: boolean;
+  campaignType: string;
+  currentBatch: string;
+  currentProgress: number;
+  totalInBatch: number;
+  totalProcessed: number;
+  totalTargeted: number;
+}
+
+let activeCampaignProgress: ActiveCampaignProgress = {
+  active: false,
+  campaignType: "",
+  currentBatch: "",
+  currentProgress: 0,
+  totalInBatch: 0,
+  totalProcessed: 0,
+  totalTargeted: 0,
+};
 
 // Helper: Match MongoDB queries with support for simple comparison operators
 function matchQuery(item: any, query: any): boolean {
@@ -64,182 +91,7 @@ function sortItems(items: any[], sortQuery: any): any[] {
   });
 }
 
-// Local Database Fallback implementation
-class LocalCollection {
-  constructor(private name: string, private db: LocalDatabase) {}
-
-  find(query: any = {}, options: any = {}) {
-    const getFiltered = async () => {
-      const items = await this.db.readCollection(this.name);
-      return items.filter(item => matchQuery(item, query));
-    };
-    return {
-      sort: (sortQuery: any) => {
-        return {
-          toArray: async () => {
-            const filtered = await getFiltered();
-            return sortItems(filtered, sortQuery);
-          }
-        };
-      },
-      toArray: async () => {
-        return await getFiltered();
-      }
-    };
-  }
-
-  async findOne(query: any) {
-    const items = await this.db.readCollection(this.name);
-    const item = items.find(item => matchQuery(item, query));
-    return item || null;
-  }
-
-  async insertOne(doc: any) {
-    const items = await this.db.readCollection(this.name);
-    const newDoc = { ...doc };
-    if (!newDoc._id) {
-      newDoc._id = generateId();
-    }
-    items.push(newDoc);
-    await this.db.writeCollection(this.name, items);
-    return { acknowledged: true, insertedId: newDoc._id };
-  }
-
-  async insertMany(docs: any[]) {
-    const items = await this.db.readCollection(this.name);
-    const addedDocs = docs.map(doc => {
-      const newDoc = { ...doc };
-      if (!newDoc._id) {
-        newDoc._id = generateId();
-      }
-      return newDoc;
-    });
-    items.push(...addedDocs);
-    await this.db.writeCollection(this.name, items);
-    return { acknowledged: true, insertedCount: addedDocs.length };
-  }
-
-  async updateOne(query: any, update: any, options: any = {}) {
-    const items = await this.db.readCollection(this.name);
-    let updated = false;
-    for (let item of items) {
-      if (matchQuery(item, query)) {
-        const setObj = update.$set || {};
-        for (const key of Object.keys(setObj)) {
-          item[key] = setObj[key];
-        }
-        updated = true;
-      }
-    }
-    if (!updated && options.upsert) {
-      const newDoc = { ...query };
-      const setObj = update.$set || {};
-      for (const key of Object.keys(setObj)) {
-        newDoc[key] = setObj[key];
-      }
-      if (!newDoc.id && query.id) {
-        newDoc.id = query.id;
-      }
-      if (!newDoc._id) {
-        newDoc._id = generateId();
-      }
-      items.push(newDoc);
-      updated = true;
-    }
-    if (updated) {
-      await this.db.writeCollection(this.name, items);
-    }
-    return { acknowledged: true, modifiedCount: updated ? 1 : 0 };
-  }
-
-  async deleteOne(query: any) {
-    const items = await this.db.readCollection(this.name);
-    const initialLen = items.length;
-    const filtered = items.filter(item => !matchQuery(item, query));
-    if (filtered.length !== initialLen) {
-      await this.db.writeCollection(this.name, filtered);
-    }
-    return { acknowledged: true, deletedCount: initialLen - filtered.length };
-  }
-
-  async countDocuments(query: any = {}) {
-    const items = await this.db.readCollection(this.name);
-    const filtered = items.filter(item => matchQuery(item, query));
-    return filtered.length;
-  }
-}
-
-class LocalDatabase {
-  private dataDir = path.join(process.cwd(), "local_db");
-
-  constructor() {
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    }
-  }
-
-  collection(name: string) {
-    return new LocalCollection(name, this);
-  }
-
-  async readCollection(name: string): Promise<any[]> {
-    const filePath = path.join(this.dataDir, `${name}.json`);
-    if (!fs.existsSync(filePath)) {
-      return [];
-    }
-    try {
-      const raw = fs.readFileSync(filePath, "utf-8");
-      return JSON.parse(raw);
-    } catch (err) {
-      console.error(`Error reading collection ${name}:`, err);
-      return [];
-    }
-  }
-
-  async writeCollection(name: string, data: any[]): Promise<void> {
-    const filePath = path.join(this.dataDir, `${name}.json`);
-    try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-    } catch (err) {
-      console.error(`Error writing collection ${name}:`, err);
-    }
-  }
-}
-
-let mongoClient: MongoClient | null = null;
-let mongoDbInstance: any = null;
-
-async function getDb() {
-  if (mongoDbInstance) return mongoDbInstance;
-  
-  const mUri = process.env.MONGODB_URI;
-  if (!mUri) {
-    console.warn("⚠️ MONGODB_URI environment variable is not set. Falling back to robust Local File Database storage to preserve full application function offline!");
-    mongoDbInstance = new LocalDatabase();
-    return mongoDbInstance;
-  }
-  
-  console.log("Connecting to MongoDB database cluster...");
-  try {
-    mongoClient = new MongoClient(mUri);
-    await mongoClient.connect();
-    
-    const dbName = mUri.split("/").pop()?.split("?")[0] || "church_attendance";
-    mongoDbInstance = mongoClient.db(dbName);
-    console.log(`Connected to MongoDB database: ${dbName}`);
-    return mongoDbInstance;
-  } catch (err) {
-    console.error("MongoDB Connection Failed, fallback to local backup db directory:", err);
-    console.warn("⚠️ Local File Database activated to bypass system launch blocks.");
-    mongoDbInstance = new LocalDatabase();
-    return mongoDbInstance;
-  }
-}
-
-// Helper: Generate structured 24-char unique id string
-function generateId(): string {
-  return new ObjectId().toHexString();
-}
+import { getDb, generateId } from "./postgres-db.ts";
 
 // Helper: Format Date as YYYY-MM-DD
 function formatDate(d: Date): string {
@@ -297,8 +149,8 @@ async function runCatchupScheduler() {
       }
     }
 
-    // 2. Saturday Encouragement (Saturday, hour >= 18)
-    if (dayOfWeek === 6 && hour >= 18) {
+    // 2. Saturday Encouragement (Saturday, hour >= 10)
+    if (dayOfWeek === 6 && hour >= 10) {
       const alreadySent = await db.collection("whatsapp_logs").findOne({
         messageType: "Saturday Encouragement",
         sentAt: { $gte: sixteenHoursAgo }
@@ -454,7 +306,7 @@ async function addAuditLog(userId: string, userEmail: string, action: string) {
 async function logSchedulerRun(
   campaignType: "Wednesday Word Cafe Reminder" | "Saturday Encouragement" | "Sunday Absentee Follow-Up",
   triggerType: "Cron" | "Catch-up" | "Manual",
-  result: { processedCount: number; failedCount: number; logs: any[] }
+  result: { campaignRunId?: string; processedCount: number; failedCount: number; logs: any[] }
 ) {
   try {
     const db = await getDb();
@@ -466,6 +318,7 @@ async function logSchedulerRun(
       whatsAppNumber: item.phone || "",
       status: item.status || "Failed",
       error: item.error || undefined,
+      batchLabel: item.batchLabel || "Unknown",
     }));
 
     const logs = result.logs.map((item: any) => ({
@@ -475,10 +328,11 @@ async function logSchedulerRun(
       phone: item.phone || "",
       status: item.status || "Failed",
       error: item.error || undefined,
+      batchLabel: item.batchLabel || "Unknown",
     }));
 
     await db.collection("scheduler_runs").insertOne({
-      id: generateId(),
+      id: result.campaignRunId || generateId(),
       campaignType,
       triggerType,
       executedAt: new Date().toISOString(),
@@ -1957,6 +1811,70 @@ app.delete("/api/workers/:id", requireSubscription, async (req, res) => {
 app.get("/api/attendance", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
+    const { date } = req.query;
+
+    if (date) {
+      const dateStr = date as string; // YYYY-MM-DD
+      // Query records for this specific date
+      const records = await db.collection("attendance").find({ date: dateStr }, { projection: { _id: 0 } }).toArray();
+      
+      // Fetch members and workers to calculate totals and absentees
+      const [members, workers] = await Promise.all([
+        db.collection("members").find({}, { projection: { _id: 0 } }).toArray(),
+        db.collection("workers").find({}, { projection: { _id: 0 } }).toArray(),
+      ]);
+
+      const totalChildren = members.filter((m: any) => m.role === "chiden" || m.role === "children").length;
+      const totalMembers = members.filter((m: any) => m.role !== "chiden" && m.role !== "children").length;
+      const totalWorkers = workers.length;
+
+      let membersPresent = 0;
+      let workersPresent = 0;
+      let childrenPresent = 0;
+      let malePresent = 0;
+      let femalePresent = 0;
+
+      records.forEach((rec: any) => {
+        if (rec.personType === "worker") {
+          workersPresent++;
+        } else if (rec.personType === "chiden" || rec.personType === "children") {
+          childrenPresent++;
+        } else {
+          membersPresent++;
+        }
+        
+        if (rec.gender === "Male") {
+          malePresent++;
+        } else if (rec.gender === "Female") {
+          femalePresent++;
+        }
+      });
+
+      const absentMembers = Math.max(0, totalMembers - membersPresent);
+      const absentWorkers = Math.max(0, totalWorkers - workersPresent);
+      const absentChildren = Math.max(0, totalChildren - childrenPresent);
+
+      const stats = {
+        totalMembers,
+        totalWorkers,
+        totalChildren,
+        membersPresent,
+        workersPresent,
+        childrenPresent,
+        absentMembers,
+        absentWorkers,
+        absentChildren,
+        malePresent,
+        femalePresent,
+        date: dateStr,
+      };
+
+      return res.json({
+        records,
+        stats
+      });
+    }
+
     const records = await db.collection("attendance").find({}, { projection: { _id: 0 } }).toArray();
     res.json(records);
   } catch (err: any) {
@@ -2316,6 +2234,172 @@ app.delete("/api/quick-replies/:id", requireSubscription, async (req, res) => {
   }
 });
 
+// Helper: Normalize potentially legacy, flat, or raw array backup structures gracefully
+function normalizeBackupPayload(backupData: any): any {
+  if (!backupData) return null;
+
+  // Support stringified JSON if passed directly
+  if (typeof backupData === "string") {
+    try {
+      backupData = JSON.parse(backupData);
+    } catch (e) {
+      console.error("[Backup Normalization Debug] Could not parse stringified backupData:", e);
+    }
+  }
+
+  // Case 1: Raw JSON array of items (e.g. users uploading a flat members list)
+  if (Array.isArray(backupData)) {
+    const backupDate = new Date().toISOString();
+    const systemVersion = "1.0.0";
+    const totalRecords = backupData.length;
+    const tableCounts: any = {
+      members: totalRecords,
+      admins: 0,
+      settings: 0
+    };
+    return {
+      backupDate,
+      systemVersion,
+      databaseVersion: "PostgreSQL 15 (Auto-Wrapped List)",
+      database: "PostgreSQL 15 (Auto-Wrapped List)",
+      churchName: "Auto-Wrapped Members Import",
+      totalRecords,
+      manifest: {
+        version: systemVersion,
+        databaseTimestamp: backupDate,
+        tableCounts
+      },
+      data: {
+        members: backupData,
+        admins: [],
+        settings: []
+      }
+    };
+  }
+
+  // Case 2: Standard structured backup with existing .data wrapper
+  if (backupData.data && typeof backupData.data === "object") {
+    const data = backupData.data;
+    const requiredTables = ["members", "admins", "settings"];
+    const normalizedData: any = { ...data };
+    
+    for (const t of requiredTables) {
+      if (!normalizedData[t]) {
+        normalizedData[t] = [];
+      }
+    }
+    
+    let totalRecords = 0;
+    const tableCounts: any = {};
+    for (const key of Object.keys(normalizedData)) {
+      if (Array.isArray(normalizedData[key])) {
+        const len = normalizedData[key].length;
+        tableCounts[key] = len;
+        totalRecords += len;
+      } else {
+        tableCounts[key] = 0;
+      }
+    }
+
+    const backupDate = backupData.backupDate || new Date().toISOString();
+    const systemVersion = backupData.systemVersion || "1.0.0";
+    const databaseVal = backupData.database || backupData.databaseVersion || "PostgreSQL 15";
+
+    return {
+      backupDate,
+      systemVersion,
+      databaseVersion: databaseVal,
+      database: databaseVal,
+      churchName: backupData.churchName || "Church Attendance Portal",
+      totalRecords,
+      manifest: backupData.manifest || {
+        version: systemVersion,
+        databaseTimestamp: backupDate,
+        tableCounts
+      },
+      data: normalizedData
+    };
+  }
+
+  // Case 3: Flat dictionary of tables/collections e.g. { "members": [...], "settings": [...] }
+  if (typeof backupData === "object") {
+    const keys = Object.keys(backupData);
+    const dataObj: any = {};
+    let totalRecords = 0;
+    const tableCounts: any = {};
+    
+    for (const key of keys) {
+      if (Array.isArray(backupData[key])) {
+        dataObj[key] = backupData[key];
+        const len = backupData[key].length;
+        tableCounts[key] = len;
+        totalRecords += len;
+      }
+    }
+
+    if (Object.keys(dataObj).length > 0) {
+      const requiredTables = ["members", "admins", "settings"];
+      for (const t of requiredTables) {
+        if (!dataObj[t]) {
+          dataObj[t] = [];
+          tableCounts[t] = 0;
+        }
+      }
+      const backupDate = backupData.backupDate || new Date().toISOString();
+      const systemVersion = backupData.systemVersion || "1.0.0";
+      const databaseVal = backupData.database || backupData.databaseVersion || "PostgreSQL 15 (Auto-Wrapped Table Dictionary)";
+      return {
+        backupDate,
+        systemVersion,
+        databaseVersion: databaseVal,
+        database: databaseVal,
+        churchName: backupData.churchName || "Auto-Wrapped Database",
+        totalRecords,
+        manifest: backupData.manifest || {
+          version: systemVersion,
+          databaseTimestamp: backupDate,
+          tableCounts
+        },
+        data: dataObj
+      };
+    }
+  }
+
+  return backupData;
+}
+
+// Helper: Perform a live system backup
+async function generateBackupPackage(adminEmail: string) {
+  const db = await getDb();
+  const collections = ["members", "workers", "attendance", "whatsapp_logs", "settings", "admins", "audit_logs", "sundays", "quick_replies", "scheduler_runs", "message_queue", "baileys_session", "backup_history"];
+  const databaseTimestamp = new Date().toISOString();
+  
+  const backup: any = {
+    backupDate: databaseTimestamp,
+    systemVersion: "1.0.0",
+    databaseVersion: "PostgreSQL 15",
+    database: "PostgreSQL 15",
+    churchName: "Church Attendance Portal",
+    totalRecords: 0,
+    manifest: {
+      version: "1.0.0",
+      databaseTimestamp,
+      tableCounts: {}
+    },
+    data: {}
+  };
+
+  let totalRecords = 0;
+  for (const col of collections) {
+    const list = await db.collection(col).find({}).toArray();
+    backup.data[col] = list;
+    backup.manifest.tableCounts[col] = list.length;
+    totalRecords += list.length;
+  }
+  backup.totalRecords = totalRecords;
+  return backup;
+}
+
 // GET Backup Status Metadata
 app.get("/api/backup/status", requireSubscription, async (req, res) => {
   try {
@@ -2396,6 +2480,15 @@ app.post("/api/whatsapp/disconnect", requireSubscription, async (req, res) => {
 });
 
 // WhatsApp settings
+app.get("/api/whatsapp/active-campaign-progress", requireSubscription, async (req, res) => {
+  try {
+    const progress = await queueService.getProgress();
+    res.json(progress);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/whatsapp/config", requireSubscription, async (req, res) => {
   try {
     const db = await getDb();
@@ -2477,16 +2570,134 @@ app.get("/api/whatsapp/logs", requireSubscription, async (req, res) => {
   }
 });
 
-// Backup Database (direct download format)
+// DELETE message log
+app.delete("/api/whatsapp/logs/:id", requireSubscription, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = await getDb();
+    const result = await db.collection("whatsapp_logs").deleteOne({ id });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Log not found" });
+    }
+    
+    // Log this action to audit logs
+    const adminEmail = req.headers["x-user-email"] as string;
+    await addAuditLog(
+      req.headers["x-user-id"] as string || "admin", 
+      adminEmail || "admin@church.org", 
+      `Deleted WhatsApp dispatch log entry #${id}`
+    );
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// ADVANCED DATABASE BACKUP & RESTORE MODULE
+// ==========================================
+
+// Helper to perform automated or manual snapshots
+async function performAutomatedBackup(createdBy: string = "System Scheduler") {
+  try {
+    const db = await getDb();
+    const collections = ["members", "workers", "attendance", "whatsapp_logs", "settings", "admins", "audit_logs", "sundays", "quick_replies", "scheduler_runs", "message_queue", "baileys_session", "backup_history"];
+    const databaseTimestamp = new Date().toISOString();
+    
+    const backup: any = {
+      backupDate: databaseTimestamp,
+      systemVersion: "1.0.0",
+      databaseVersion: "PostgreSQL 15",
+      database: "PostgreSQL 15",
+      churchName: "Church Attendance Portal",
+      totalRecords: 0,
+      manifest: {
+        version: "1.0.0",
+        databaseTimestamp,
+        tableCounts: {}
+      },
+      data: {}
+    };
+
+    let totalRecords = 0;
+    for (const col of collections) {
+      const list = await db.collection(col).find({}).toArray();
+      backup.data[col] = list;
+      backup.manifest.tableCounts[col] = list.length;
+      totalRecords += list.length;
+    }
+    backup.totalRecords = totalRecords;
+
+    const backupsDir = path.join(process.cwd(), "local_db", "backups");
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const d = new Date();
+    const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const filename = `auto_backup_${timestamp}.json`;
+    const filePath = path.join(backupsDir, filename);
+
+    fs.writeFileSync(filePath, JSON.stringify(backup, null, 2), "utf-8");
+
+    // Save history record
+    const historyItem = {
+      id: generateId(),
+      filename,
+      backupDate: d.toISOString(),
+      size: fs.statSync(filePath).size,
+      createdBy
+    };
+    await db.collection("backup_history").insertOne(historyItem);
+
+    // Retention policy: Keep latest 30 backups
+    const files = fs.readdirSync(backupsDir)
+      .filter(f => f.endsWith(".json"))
+      .map(f => ({ name: f, path: path.join(backupsDir, f), mtime: fs.statSync(path.join(backupsDir, f)).mtime }));
+    
+    // Sort oldest first
+    files.sort((a, b) => a.mtime.getTime() - b.mtime.getTime());
+    if (files.length > 30) {
+      const filesToDelete = files.slice(0, files.length - 30);
+      for (const f of filesToDelete) {
+        fs.unlinkSync(f.path);
+        await db.collection("backup_history").deleteOne({ filename: f.name });
+      }
+      console.log(`[Backup Retention] Deleted ${filesToDelete.length} older backups.`);
+    }
+
+    // Update settings status
+    await db.collection("settings").updateOne(
+      { id: "backup_status" },
+      { $set: { id: "backup_status", lastBackupDate: d.toISOString() } },
+      { upsert: true }
+    );
+
+    console.log(`[Automated Backup] Successfully created backup file: ${filename}`);
+  } catch (err: any) {
+    console.error("[Automated Backup] Error taking scheduled backup:", err.message);
+  }
+}
+
+// Backup Database (direct download format as JSON or SQL)
 app.get("/api/backup/export", requireSubscription, async (req, res) => {
   try {
-    const collections = ["members", "workers", "attendance", "whatsapp_logs", "settings", "admins", "audit_logs"];
-    const backup: any = {};
     const db = await getDb();
-
-    for (const col of collections) {
-      backup[col] = await db.collection(col).find({}, { projection: { _id: 0 } }).toArray();
+    const adminId = req.headers["x-admin-id"] || req.query?.adminId;
+    const adminEmail = req.headers["x-admin-email"] || req.query?.adminEmail;
+    
+    let requester = null;
+    if (adminId) requester = await db.collection("admins").findOne({ id: adminId as string });
+    if (!requester && adminEmail) requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    
+    if (!requester || requester.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can perform manual backups." });
     }
+
+    const format = String(req.query.format || "json").toLowerCase();
+    const backup = await generateBackupPackage(String(adminEmail));
 
     // Save successful backup status
     await db.collection("settings").updateOne(
@@ -2495,13 +2706,433 @@ app.get("/api/backup/export", requireSubscription, async (req, res) => {
       { upsert: true }
     );
 
+    // Log action to Audit Logs
+    await addAuditLog(
+      String(requester.id),
+      String(requester.email),
+      `Downloaded full system database backup (Format: ${format.toUpperCase()})`
+    );
+
     const pad = (n: number) => String(n).padStart(2, "0");
     const d = new Date();
     const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-    res.setHeader("Content-disposition", `attachment; filename=church_attendance_backup_${dateStr}.json`);
-    res.set("Content-Type", "application/json");
-    res.send(JSON.stringify(backup, null, 2));
+    if (format === "sql") {
+      // Export as SQL inserts
+      let sqlDump = `-- Church Attendance Management System SQL Backup\n-- Date: ${new Date().toISOString()}\n\n`;
+      const collections = ["members", "workers", "attendance", "whatsapp_logs", "settings", "admins", "audit_logs", "sundays", "quick_replies", "scheduler_runs", "message_queue", "baileys_session", "backup_history"];
+      
+      for (const col of collections) {
+        sqlDump += `DROP TABLE IF EXISTS "${col}" CASCADE;\n`;
+        sqlDump += `CREATE TABLE "${col}" (id VARCHAR(255) PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);\n`;
+        for (const doc of (backup.data[col] || [])) {
+          const escapedData = doc ? JSON.stringify(doc).replace(/'/g, "''") : '{}';
+          sqlDump += `INSERT INTO "${col}" (id, data) VALUES ('${doc.id || doc._id}', '${escapedData}');\n`;
+        }
+        sqlDump += `\n`;
+      }
+
+      res.setHeader("Content-disposition", `attachment; filename=church_attendance_backup_${dateStr}.sql`);
+      res.set("Content-Type", "text/plain");
+      res.send(sqlDump);
+    } else {
+      res.setHeader("Content-disposition", `attachment; filename=church_attendance_backup_${dateStr}.json`);
+      res.set("Content-Type", "application/json");
+      res.send(JSON.stringify(backup, null, 2));
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Validate Backup Payload BEFORE Restore
+app.post("/api/backup/validate", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    // Support both wrapped backupData object and direct root-level payload body
+    let backupData = req.body?.backupData || req.body;
+    
+    console.log("[Backup Validation] Initiating server-side validation of uploaded database backup...");
+
+    if (!backupData || Object.keys(backupData).length === 0) {
+      console.error("[Backup Validation Failed] Critical Error: The request body is missing or empty.");
+      return res.status(400).json({ error: "Invalid Backup File: Missing backup data payload." });
+    }
+
+    // Normalize the backup data to support legacy, flat, and raw list uploads gracefully!
+    const normalized = normalizeBackupPayload(backupData);
+
+    if (!normalized || !normalized.data) {
+      console.error("[Backup Validation Failed] Normalization of backup payload returned null or invalid structure.");
+      return res.status(400).json({ error: "Invalid Backup File: Could not parse or normalize backup data format." });
+    }
+
+    // Detail-log top level keys of the normalized backup file
+    console.log("[Backup Validation Debug] Top-level keys present in normalized backup file:", Object.keys(normalized));
+
+    // Verify presence and inner structure of the 'manifest' header
+    const missingFields: string[] = [];
+    if (!normalized.manifest) {
+      missingFields.push("manifest");
+      console.error("[Backup Validation Failed] Missing 'manifest' object in backup headers.");
+    } else {
+      console.log("[Backup Validation Debug] 'manifest' header found. Verifying internal manifest fields...");
+      if (!normalized.manifest.version) {
+        missingFields.push("manifest.version");
+        console.error("[Backup Validation Failed] Missing 'manifest.version' inside manifest header.");
+      }
+      if (!normalized.manifest.databaseTimestamp) {
+        missingFields.push("manifest.databaseTimestamp");
+        console.error("[Backup Validation Failed] Missing 'manifest.databaseTimestamp' inside manifest header.");
+      }
+      if (!normalized.manifest.tableCounts) {
+        missingFields.push("manifest.tableCounts");
+        console.error("[Backup Validation Failed] Missing 'manifest.tableCounts' inside manifest header.");
+      }
+    }
+
+    // Verify other top-level structural fields
+    if (!normalized.backupDate) {
+      missingFields.push("backupDate");
+      console.error("[Backup Validation Failed] Missing 'backupDate' top-level field.");
+    }
+    if (!normalized.systemVersion) {
+      missingFields.push("systemVersion");
+      console.error("[Backup Validation Failed] Missing 'systemVersion' top-level field.");
+    }
+    if (!normalized.databaseVersion) {
+      missingFields.push("databaseVersion");
+      console.error("[Backup Validation Failed] Missing 'databaseVersion' top-level field.");
+    }
+    if (!normalized.database) {
+      missingFields.push("database");
+      console.error("[Backup Validation Failed] Missing 'database' top-level field.");
+    }
+    if (!normalized.data) {
+      missingFields.push("data");
+      console.error("[Backup Validation Failed] Missing 'data' object containing table records.");
+    }
+
+    if (missingFields.length > 0) {
+      console.error(`[Backup Validation Rejection] File rejected due to missing required PostgreSQL-aligned package headers: ${missingFields.join(", ")}`);
+      return res.status(400).json({
+        error: `Invalid Backup File: Missing required backup package headers: ${missingFields.join(", ")}`
+      });
+    }
+
+    const tables = Object.keys(normalized.data);
+    const requiredTables = ["members", "admins", "settings"];
+    const missingTables = requiredTables.filter(t => !tables.includes(t));
+    if (missingTables.length > 0) {
+      console.error(`[Backup Validation Failed] Missing critical database tables required for system execution: ${missingTables.join(", ")}. Uploaded tables are: ${tables.join(", ")}`);
+      return res.status(400).json({ error: `Invalid Backup File: Missing critical data tables: ${missingTables.join(", ")}` });
+    }
+
+    // Calculate Summary Stats
+    const summary: any = {};
+    let totalRecords = 0;
+    for (const table of tables) {
+      const records = normalized.data[table];
+      summary[table] = Array.isArray(records) ? records.length : 0;
+      totalRecords += summary[table];
+    }
+
+    console.log(`[Backup Validation Success] Validation checks completed. Validated package with ${totalRecords} total records across ${tables.length} tables.`);
+
+    res.json({
+      success: true,
+      backupDate: normalized.backupDate,
+      systemVersion: normalized.systemVersion,
+      databaseVersion: normalized.databaseVersion || "Unknown",
+      churchName: normalized.churchName || "Unknown",
+      totalRecords,
+      tableCounts: summary,
+      normalizedPayload: normalized
+    });
+  } catch (err: any) {
+    console.error("[Backup Validation Severe Error] Exception caught during validation process:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restore Database Backup
+app.post("/api/backup/restore", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    let backupData = req.body?.backupData || req.body;
+    
+    const adminId = req.headers["x-admin-id"] || req.body?.adminId;
+    const adminEmail = req.headers["x-admin-email"] || req.body?.adminEmail;
+    
+    let requester = null;
+    if (adminId) requester = await db.collection("admins").findOne({ id: adminId as string });
+    if (!requester && adminEmail) requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    
+    if (!requester || requester.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can restore system database backups." });
+    }
+
+    // Normalize the backup data to support legacy, flat, and raw list uploads gracefully!
+    backupData = normalizeBackupPayload(backupData);
+
+    if (!backupData || !backupData.data) {
+      return res.status(400).json({ error: "Missing or invalid database backup payload." });
+    }
+
+    console.log("PostgreSQL: Initializing safe database transaction restore...");
+
+    // Safe transaction block if connected to postgres pool
+    if (db.pool) {
+      const pgClient = await db.pool.connect();
+      try {
+        await pgClient.query("BEGIN");
+        
+        const tables = Object.keys(backupData.data);
+        for (const table of tables) {
+          await pgClient.query(`TRUNCATE TABLE "${table}" CASCADE`);
+          
+          const records = backupData.data[table];
+          if (Array.isArray(records)) {
+            for (const doc of records) {
+              const id = doc.id || doc._id || generateId();
+              if (!doc.id) doc.id = id;
+              if (!doc._id) doc._id = id;
+              await pgClient.query(
+                `INSERT INTO "${table}" (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = $2`,
+                [id, JSON.stringify(doc)]
+              );
+            }
+          }
+        }
+        
+        await pgClient.query("COMMIT");
+        console.log("PostgreSQL: Database restored perfectly under transaction.");
+      } catch (txnErr: any) {
+        await pgClient.query("ROLLBACK");
+        console.error("PostgreSQL Transaction Failed - Rolling back fully:", txnErr);
+        pgClient.release();
+        return res.status(500).json({ error: "Database transaction failed. All actions rolled back safely.", details: txnErr.message });
+      }
+      pgClient.release();
+    } else {
+      // LocalDatabase mock fallback restore
+      const tables = Object.keys(backupData.data);
+      for (const table of tables) {
+        const records = backupData.data[table];
+        if (Array.isArray(records)) {
+          await db.writeCollection(table, records);
+        }
+      }
+    }
+
+    // Record Action to Audit Logs
+    await addAuditLog(
+      String(requester.id),
+      String(requester.email),
+      `Successfully restored system database from backup file dated: ${backupData.backupDate}`
+    );
+
+    res.json({ success: true, message: "Database restored successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Configure Auto Backups
+app.post("/api/backup/config", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const { frequency } = req.body; // "Daily", "Weekly", "Monthly", "Disabled"
+    
+    if (!["Daily", "Weekly", "Monthly", "Disabled"].includes(frequency)) {
+      return res.status(400).json({ error: "Invalid backup frequency configuration value." });
+    }
+
+    await db.collection("settings").updateOne(
+      { id: "auto_backup_config" },
+      { $set: { id: "auto_backup_config", frequency } },
+      { upsert: true }
+    );
+
+    res.json({ success: true, frequency });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Auto Backups Config
+app.get("/api/backup/config", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const config = await db.collection("settings").findOne({ id: "auto_backup_config" });
+    res.json({ frequency: config?.frequency || "Disabled" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET Backup History Lists
+app.get("/api/backup/history", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const history = await db.collection("backup_history").find({}).sort({ backupDate: -1 }).toArray();
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Historical Backup file
+app.post("/api/backup/history/delete", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const { filename } = req.body;
+    
+    const adminId = req.headers["x-admin-id"] || req.body?.adminId;
+    const adminEmail = req.headers["x-admin-email"] || req.body?.adminEmail;
+    
+    let requester = null;
+    if (adminId) requester = await db.collection("admins").findOne({ id: adminId as string });
+    if (!requester && adminEmail) requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    
+    if (!requester || requester.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can delete backup archives." });
+    }
+
+    if (!filename) {
+      return res.status(400).json({ error: "Missing filename value." });
+    }
+
+    // Delete database record
+    await db.collection("backup_history").deleteOne({ filename });
+
+    // Try deleting physical file if it exists
+    const backupsDir = path.join(process.cwd(), "local_db", "backups");
+    const filePath = path.join(backupsDir, filename);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    await addAuditLog(
+      String(requester.id),
+      String(requester.email),
+      `Deleted historical backup file: ${filename}`
+    );
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restore Historical Backup file
+app.post("/api/backup/history/restore", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const { filename } = req.body;
+    
+    const adminId = req.headers["x-admin-id"] || req.body?.adminId;
+    const adminEmail = req.headers["x-admin-email"] || req.body?.adminEmail;
+    
+    let requester = null;
+    if (adminId) requester = await db.collection("admins").findOne({ id: adminId as string });
+    if (!requester && adminEmail) requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    
+    if (!requester || requester.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can trigger database restores." });
+    }
+
+    if (!filename) {
+      return res.status(400).json({ error: "Missing filename value." });
+    }
+
+    const backupsDir = path.join(process.cwd(), "local_db", "backups");
+    const filePath = path.join(backupsDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Historical backup file not found on disk." });
+    }
+
+    const raw = fs.readFileSync(filePath, "utf-8");
+    let backupData = JSON.parse(raw);
+    backupData = normalizeBackupPayload(backupData);
+
+    if (!backupData || !backupData.data) {
+      return res.status(400).json({ error: "Invalid backup data content in historical archive." });
+    }
+
+    // Apply Restore
+    if (db.pool) {
+      const pgClient = await db.pool.connect();
+      try {
+        await pgClient.query("BEGIN");
+        
+        const tables = Object.keys(backupData.data);
+        for (const table of tables) {
+          await pgClient.query(`TRUNCATE TABLE "${table}" CASCADE`);
+          const records = backupData.data[table];
+          if (Array.isArray(records)) {
+            for (const doc of records) {
+              const id = doc.id || doc._id || generateId();
+              if (!doc.id) doc.id = id;
+              if (!doc._id) doc._id = id;
+              await pgClient.query(
+                `INSERT INTO "${table}" (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = $2`,
+                [id, JSON.stringify(doc)]
+              );
+            }
+          }
+        }
+        
+        await pgClient.query("COMMIT");
+      } catch (txnErr: any) {
+        await pgClient.query("ROLLBACK");
+        pgClient.release();
+        return res.status(500).json({ error: "Restore failed. Transaction rolled back safely.", details: txnErr.message });
+      }
+      pgClient.release();
+    } else {
+      const tables = Object.keys(backupData.data);
+      for (const table of tables) {
+        const records = backupData.data[table];
+        if (Array.isArray(records)) {
+          await db.writeCollection(table, records);
+        }
+      }
+    }
+
+    // Record Action
+    await addAuditLog(
+      String(requester.id),
+      String(requester.email),
+      `Restored system database from historical backup archive file: ${filename}`
+    );
+
+    res.json({ success: true, message: "Database restored successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Trigger Manual Historic Backup Point creation
+app.post("/api/backup/history/create", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const adminId = req.headers["x-admin-id"] || req.body?.adminId;
+    const adminEmail = req.headers["x-admin-email"] || req.body?.adminEmail;
+    
+    let requester = null;
+    if (adminId) requester = await db.collection("admins").findOne({ id: adminId as string });
+    if (!requester && adminEmail) requester = await db.collection("admins").findOne({ email: String(adminEmail).trim().toLowerCase() });
+    
+    if (!requester || requester.role !== "Super Admin") {
+      return res.status(403).json({ error: "Access Denied: Only Super Administrators can trigger snapshot backups." });
+    }
+
+    console.log(`[Backup History] Creating manual snapshot point for Super Admin: ${adminEmail}`);
+    await performAutomatedBackup(String(adminEmail));
+
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2666,6 +3297,10 @@ app.post("/api/whatsapp/bulk-retry", requireSubscription, async (req, res) => {
     }
 
     for (const log of logs) {
+      if (processedCount > 0 || failedCount > 0) {
+        // 3 seconds delay between messages to prevent rate-limiting and connection disconnections
+        await sleep(3000);
+      }
       let deliveryStatus: "Sent" | "Failed" = "Sent";
       let wamid = null;
       let errorMessage = "";
@@ -2720,6 +3355,213 @@ app.post("/api/whatsapp/bulk-retry", requireSubscription, async (req, res) => {
       processedCount,
       failedCount,
       errors
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET background queue items
+app.get("/api/whatsapp/queue", requireSubscription, async (req, res) => {
+  try {
+    const db = await getDb();
+    const { status, messageType, search, date } = req.query;
+
+    let items = await db.collection("message_queue").find({}).toArray();
+
+    // Filter in JS for compatibility with MongoDB and LocalDatabase fallback
+    if (status && status !== "all") {
+      items = items.filter((item: any) => item.status === status);
+    }
+    if (messageType && messageType !== "all") {
+      items = items.filter((item: any) => item.messageType === messageType);
+    }
+    if (search) {
+      const s = String(search).toLowerCase();
+      items = items.filter((item: any) => 
+        String(item.firstName || "").toLowerCase().includes(s) ||
+        String(item.lastName || "").toLowerCase().includes(s) ||
+        String(item.whatsAppNumber || "").toLowerCase().includes(s)
+      );
+    }
+    if (date) {
+      items = items.filter((item: any) => String(item.createdAt || "").startsWith(date as string));
+    }
+
+    // Sort by createdAt desc
+    items.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    res.json(items);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST queue worker control actions
+app.post("/api/whatsapp/queue/control", requireSubscription, async (req, res) => {
+  try {
+    const { action } = req.body;
+    if (action === "start") {
+      await queueService.startWorker();
+    } else if (action === "pause") {
+      await queueService.pauseWorker();
+    } else if (action === "resume") {
+      await queueService.resumeWorker();
+    } else if (action === "stop") {
+      await queueService.stopWorker();
+    } else {
+      return res.status(400).json({ error: `Invalid action: ${action}` });
+    }
+    res.json({ success: true, status: action });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST retry single failed queue item
+app.post("/api/whatsapp/queue/retry-item", requireSubscription, async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) {
+      return res.status(400).json({ error: "Missing queue item id" });
+    }
+    const success = await queueService.retryItem(id);
+    if (!success) {
+      return res.status(404).json({ error: "Queue item not found" });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST cancel remaining pending items for a campaign run
+app.post("/api/whatsapp/queue/cancel-campaign", requireSubscription, async (req, res) => {
+  try {
+    const { campaignRunId } = req.body;
+    if (!campaignRunId) {
+      return res.status(400).json({ error: "Missing campaignRunId" });
+    }
+    await queueService.cancelCampaign(campaignRunId);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET queue progress and worker state
+app.get("/api/whatsapp/queue/progress", requireSubscription, async (req, res) => {
+  try {
+    const progress = await queueService.getProgress();
+    res.json(progress);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Batch-Retry failed WhatsApp messages for a specific batch label in a campaign run
+app.post("/api/whatsapp/batch-retry", requireSubscription, async (req, res) => {
+  try {
+    const { campaignRunId, batchLabel, messageType, dateSent, adminEmail, adminId } = req.body;
+    
+    if (!batchLabel) {
+      return res.status(400).json({ error: "Missing batch label for retry" });
+    }
+
+    const db = await getDb();
+
+    // Verify WhatsApp is connected
+    const isConnected = whatsappService.getStatus().status === "connected";
+    if (!isConnected) {
+      return res.status(400).json({ error: "WhatsApp status is not connected. Please connect via QR code in settings before retrying." });
+    }
+
+    // Build the query
+    const query: any = {
+      batchLabel,
+      deliveryStatus: "Failed"
+    };
+    if (campaignRunId) {
+      query.campaignRunId = campaignRunId;
+    } else {
+      if (messageType) query.messageType = messageType;
+      if (dateSent) query.dateSent = dateSent;
+    }
+
+    const failedLogs = await db.collection("whatsapp_logs").find(query).toArray();
+
+    if (failedLogs.length === 0) {
+      return res.status(404).json({ error: `No failed messages found for ${batchLabel}` });
+    }
+
+    const queueItems = failedLogs.map((log) => {
+      const [firstName = "", ...lastNameParts] = String(log.personName || "").split(" ");
+      const lastName = lastNameParts.join(" ");
+
+      return {
+        personId: log.personId,
+        firstName,
+        lastName,
+        whatsAppNumber: log.whatsAppNumber,
+        personType: log.personType === "worker" ? ("worker" as const) : ("member" as const),
+        messageType: log.messageType || "Batch Retry",
+        messageContent: log.messageContent,
+        campaignRunId: log.campaignRunId || campaignRunId || ("run_" + generateId()),
+        batchLabel: log.batchLabel || batchLabel || "Batch A",
+      };
+    });
+
+    // Reset status of original failed logs to Pending so the UI displays them as retrying
+    await db.collection("whatsapp_logs").updateMany(
+      { id: { $in: failedLogs.map((l: any) => l.id) } },
+      { $set: { deliveryStatus: "Pending", messageStatus: "Pending", failedStatus: "" } }
+    );
+
+    // Synchronize changes to scheduler_runs if campaignRunId is provided
+    const runIdToUpdate = campaignRunId || failedLogs[0].campaignRunId;
+    if (runIdToUpdate) {
+      const run = await db.collection("scheduler_runs").findOne({ id: runIdToUpdate });
+      if (run && Array.isArray(run.targets)) {
+        const updatedTargets = run.targets.map((logItem: any) => {
+          if (logItem.batchLabel === batchLabel && logItem.status === "Failed") {
+            return {
+              ...logItem,
+              status: "Pending",
+              error: undefined,
+            };
+          }
+          return logItem;
+        });
+
+        const totalProcessed = updatedTargets.filter((l: any) => l.status === "Sent").length;
+        const totalFailed = updatedTargets.filter((l: any) => l.status === "Failed").length;
+
+        await db.collection("scheduler_runs").updateOne(
+          { id: runIdToUpdate },
+          {
+            $set: {
+              targets: updatedTargets,
+              logs: updatedTargets,
+              processedCount: totalProcessed,
+              failedCount: totalFailed,
+            }
+          }
+        );
+      }
+    }
+
+    // Add them to background queue
+    await queueService.addToQueue(queueItems);
+
+    await addAuditLog(
+      adminId || "unknown",
+      adminEmail || "admin@church.org",
+      `Batch retried failed WhatsApp messages for ${batchLabel}. Queued ${failedLogs.length} messages.`
+    );
+
+    res.json({
+      success: true,
+      queuedCount: failedLogs.length,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2800,9 +3642,37 @@ app.post("/api/whatsapp/send-custom", requireSubscription, async (req, res) => {
 });
 
 // Core Follow-up Runner Function
-async function executeSundayFollowups(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
+async function verifyWhatsAppConnection(): Promise<boolean> {
+  const currentStatus = whatsappService.getStatus().status;
+  if (currentStatus === "connected") {
+    console.log("[Baileys Verification] WhatsApp is already connected.");
+    return true;
+  }
+  console.log(`[Baileys Verification] WhatsApp is currently '${currentStatus}'. Attempting automatic reconnection...`);
+  try {
+    await whatsappService.connect();
+    // Wait up to 10 seconds checking if status becomes "connected"
+    for (let i = 0; i < 10; i++) {
+      await sleep(1000);
+      if (whatsappService.getStatus().status === "connected") {
+        console.log("[Baileys Verification] Automatic reconnection successful.");
+        return true;
+      }
+    }
+  } catch (err: any) {
+    console.error("[Baileys Verification] Reconnection failed:", err.message);
+  }
+  return whatsappService.getStatus().status === "connected";
+}
+
+async function executeSundayFollowups(): Promise<{ campaignRunId: string; processedCount: number; failedCount: number; logs: any[] }> {
   console.log("Triggering Sunday 6:00 PM Absent check...");
   
+  // Verify WhatsApp (Baileys) connection before execution
+  await verifyWhatsAppConnection();
+
+  const campaignRunId = "run_" + generateId();
+
   const todaySun = getSundayOfDate(getWatDate());
   const prevSundayDate = getWatDate();
   prevSundayDate.setDate(prevSundayDate.getDate() - 7);
@@ -2847,81 +3717,51 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
 
   const memberTemplate = config?.memberTemplate || memberDefault;
   const workerTemplate = config?.workerTemplate || workerDefault;
-  
-  let processedCount = 0;
-  let failedCount = 0;
-  const executionLogs: any[] = [];
 
-  for (const person of absenteesList) {
-    const personCol = person.personType === "worker" ? "workers" : "members";
-    let deliveryStatus: "Sent" | "Failed" = "Sent";
-    let wamid = null;
-    let errMessage = "";
-
+  const queueItems = absenteesList.map((person, index) => {
     const rawTemplate = person.personType === "worker" ? workerTemplate : memberTemplate;
     const messageText = rawTemplate
       .replace(/{Name}/g, person.firstName)
       .replace(/{FullName}/g, `${person.firstName} ${person.lastName}`);
 
-    try {
-      if (whatsappService.getStatus().status === "connected") {
-        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, messageText);
-        wamid = result.messages?.[0]?.id || null;
-        processedCount++;
-      } else {
-        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
-      }
-    } catch (err: any) {
-      console.error(`Failed to send automated follow up to ${person.whatsAppNumber}:`, err.message);
-      deliveryStatus = "Failed";
-      errMessage = err.message;
-      failedCount++;
-    }
+    const batchIndex = Math.floor(index / 5);
+    const batchLabel = "Batch " + String.fromCharCode(65 + batchIndex);
 
-    const now = new Date();
-    const dateSentStr = now.toISOString().split("T")[0];
-    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
-
-    await db.collection("whatsapp_logs").insertOne({
-      id: generateId(),
+    return {
       personId: person.personId,
-      personName: `${person.firstName} ${person.lastName}`,
-      personType: person.personType,
+      firstName: person.firstName,
+      lastName: person.lastName,
       whatsAppNumber: person.whatsAppNumber,
-      messageContent: messageText,
-      sentAt: now.toISOString(),
-      dateSent: dateSentStr,
-      timeSent: timeSentStr,
-      deliveryStatus,
-      readStatus: "Unread",
-      messageStatus: deliveryStatus,
-      messageType: "Sunday Absentee Follow-Up",
-      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
-      wamid,
-    });
-
-    await db.collection(personCol).updateOne(
-      { id: person.personId },
-      {
-        $set: {
-          currentStatus: "Absent",
-          attendedAtTime: null,
-          messageSent: true,
-          messageSentDate: now.toISOString(),
-          messageDeliveryStatus: deliveryStatus,
-        }
-      }
-    );
-
-    executionLogs.push({
-      personId: person.personId,
-      name: `${person.firstName} ${person.lastName}`,
       personType: person.personType,
-      status: deliveryStatus,
-      phone: person.whatsAppNumber,
-      error: deliveryStatus === "Failed" ? (errMessage || "WhatsApp Web Client (Baileys) offline or transmission failed.") : null,
-    });
-  }
+      messageType: "Sunday Absentee Follow-Up" as const,
+      messageContent: messageText,
+      campaignRunId,
+      batchLabel,
+    };
+  });
+
+  // Write initial scheduler_run record in DB
+  const targets = queueItems.map((item) => ({
+    personId: item.personId,
+    personName: `${item.firstName} ${item.lastName}`,
+    personType: item.personType,
+    whatsAppNumber: item.whatsAppNumber,
+    status: "Pending",
+    batchLabel: item.batchLabel,
+  }));
+
+  await db.collection("scheduler_runs").insertOne({
+    id: campaignRunId,
+    campaignType: "Sunday Absentee Follow-Up",
+    triggerType: "Manual",
+    executedAt: new Date().toISOString(),
+    targetedCount: queueItems.length,
+    processedCount: 0,
+    failedCount: 0,
+    targets,
+    logs: targets,
+    status: "Completed",
+  });
 
   // Set members absent if they did not attend today
   const allMembers = await db.collection("members").find({}, { projection: { _id: 0 } }).toArray();
@@ -2938,33 +3778,21 @@ async function executeSundayFollowups(): Promise<{ processedCount: number; faile
     }
   }
 
-  // Always write a system execution log to prevent duplicate trigger loops
-  const systemNow = new Date();
-  await db.collection("whatsapp_logs").insertOne({
-    id: "sys_" + generateId(),
-    personId: "system",
-    personName: "System Scheduler",
-    personType: "system",
-    whatsAppNumber: "0000000000",
-    messageContent: `Sunday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
-    sentAt: systemNow.toISOString(),
-    dateSent: systemNow.toISOString().split("T")[0],
-    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
-    deliveryStatus: "Sent",
-    readStatus: "Read",
-    messageStatus: "Sent",
-    messageType: "Sunday Absentee Follow-Up",
-    failedStatus: "",
-    wamid: "sys_wamid_" + Date.now(),
-  });
+  // Push to queue
+  await queueService.addToQueue(queueItems);
 
-  return { processedCount, failedCount, logs: executionLogs };
+  return { campaignRunId, processedCount: queueItems.length, failedCount: 0, logs: targets };
 }
 
 // Core Saturday Encouragement Runner Function
-async function executeSaturdayEncouragement(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
-  console.log("Triggering Saturday 6:00 PM Encouragement transmission...");
+async function executeSaturdayEncouragement(): Promise<{ campaignRunId: string; processedCount: number; failedCount: number; logs: any[] }> {
+  console.log("Triggering Saturday 10:00 AM Encouragement transmission...");
   
+  // Verify WhatsApp (Baileys) connection before execution
+  await verifyWhatsAppConnection();
+
+  const campaignRunId = "run_" + generateId();
+
   const db = await getDb();
   const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
 
@@ -3004,107 +3832,65 @@ async function executeSaturdayEncouragement(): Promise<{ processedCount: number;
   const saturdayDefault = "Happy Weekend from House of Glory. We are excited to worship with you tomorrow at Sunday Experience. Come expectant and invite someone. We look forward to seeing you in God's presence. God bless you.";
   const saturdayTemplate = config?.saturdayTemplate || saturdayDefault;
 
-  let processedCount = 0;
-  let failedCount = 0;
-  const executionLogs: any[] = [];
-
-  for (const person of targetList) {
-    if (!person.whatsAppNumber) continue;
-    
+  const queueItems = targetList.map((person, index) => {
     const formattedMsg = saturdayTemplate
       .replace(/{[Nn]ame}/g, person.firstName || "")
       .replace(/{[Ff]ull[Nn]ame}/g, `${person.firstName || ""} ${person.lastName || ""}`.trim());
 
-    const personCol = person.personType === "worker" ? "workers" : "members";
-    let deliveryStatus: "Sent" | "Failed" = "Sent";
-    let wamid = null;
-    let errMessage = "";
+    const batchIndex = Math.floor(index / 5);
+    const batchLabel = "Batch " + String.fromCharCode(65 + batchIndex);
 
-    try {
-      if (whatsappService.getStatus().status === "connected") {
-        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, formattedMsg);
-        wamid = result.messages?.[0]?.id || null;
-        processedCount++;
-      } else {
-        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
-      }
-    } catch (err: any) {
-      console.error(`Failed to send automated Saturday Encouragement to ${person.whatsAppNumber}:`, err.message);
-      deliveryStatus = "Failed";
-      errMessage = err.message;
-      failedCount++;
-    }
-
-    const now = new Date();
-    const dateSentStr = now.toISOString().split("T")[0];
-    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
-
-    await db.collection("whatsapp_logs").insertOne({
-      id: generateId(),
+    return {
       personId: person.id,
-      personName: `${person.firstName} ${person.lastName}`,
-      personType: person.personType,
+      firstName: person.firstName,
+      lastName: person.lastName,
       whatsAppNumber: person.whatsAppNumber,
-      messageContent: formattedMsg,
-      sentAt: now.toISOString(),
-      dateSent: dateSentStr,
-      timeSent: timeSentStr,
-      deliveryStatus,
-      readStatus: "Unread",
-      messageStatus: deliveryStatus,
-      messageType: "Saturday Encouragement",
-      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
-      wamid,
-    });
-
-    await db.collection(personCol).updateOne(
-      { id: person.id },
-      {
-        $set: {
-          messageSent: true,
-          messageSentDate: now.toISOString(),
-          messageDeliveryStatus: deliveryStatus,
-        }
-      }
-    );
-
-    executionLogs.push({
-      personId: person.id,
-      name: `${person.firstName} ${person.lastName}`,
       personType: person.personType,
-      status: deliveryStatus,
-      phone: person.whatsAppNumber,
-      error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
-    });
-  }
-
-  // Always write a system execution log to prevent duplicate trigger loops
-  const systemNow = new Date();
-  await db.collection("whatsapp_logs").insertOne({
-    id: "sys_" + generateId(),
-    personId: "system",
-    personName: "System Scheduler",
-    personType: "system",
-    whatsAppNumber: "0000000000",
-    messageContent: `Saturday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
-    sentAt: systemNow.toISOString(),
-    dateSent: systemNow.toISOString().split("T")[0],
-    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
-    deliveryStatus: "Sent",
-    readStatus: "Read",
-    messageStatus: "Sent",
-    messageType: "Saturday Encouragement",
-    failedStatus: "",
-    wamid: "sys_wamid_" + Date.now(),
+      messageType: "Saturday Encouragement" as const,
+      messageContent: formattedMsg,
+      campaignRunId,
+      batchLabel,
+    };
   });
 
-  return { processedCount, failedCount, logs: executionLogs };
+  // Write initial scheduler_run record in DB
+  const targets = queueItems.map((item) => ({
+    personId: item.personId,
+    personName: `${item.firstName} ${item.lastName}`,
+    personType: item.personType,
+    whatsAppNumber: item.whatsAppNumber,
+    status: "Pending",
+    batchLabel: item.batchLabel,
+  }));
+
+  await db.collection("scheduler_runs").insertOne({
+    id: campaignRunId,
+    campaignType: "Saturday Encouragement",
+    triggerType: "Manual",
+    executedAt: new Date().toISOString(),
+    targetedCount: queueItems.length,
+    processedCount: 0,
+    failedCount: 0,
+    targets,
+    logs: targets,
+    status: "Completed",
+  });
+
+  // Push to queue
+  await queueService.addToQueue(queueItems);
+
+  return { campaignRunId, processedCount: queueItems.length, failedCount: 0, logs: targets };
 }
 
 // Core Wednesday Reminder Runner Function
-async function executeWednesdayReminders(): Promise<{ processedCount: number; failedCount: number; logs: any[] }> {
+async function executeWednesdayReminders(): Promise<{ campaignRunId: string; processedCount: number; failedCount: number; logs: any[] }> {
   console.log("Triggering Wednesday 10:00 AM Word Cafe transmission...");
   
+  // Verify WhatsApp (Baileys) connection before execution
+  await verifyWhatsAppConnection();
+
+  const campaignRunId = "run_" + generateId();
+
   const db = await getDb();
   const config = await db.collection("settings").findOne({ id: "whatsapp_config" }, { projection: { _id: 0 } });
 
@@ -3144,101 +3930,54 @@ async function executeWednesdayReminders(): Promise<{ processedCount: number; fa
   const wednesdayDefault = "Good morning and God bless you. Join us today for Word Cafe (Bible Study) as we study God's Word together and grow in faith. We look forward to seeing you. God bless you.";
   const wednesdayTemplate = config?.wednesdayTemplate || wednesdayDefault;
 
-  let processedCount = 0;
-  let failedCount = 0;
-  const executionLogs: any[] = [];
-
-  for (const person of targetList) {
-    if (!person.whatsAppNumber) continue;
-
+  const queueItems = targetList.map((person, index) => {
     const formattedMsg = wednesdayTemplate
       .replace(/{[Nn]ame}/g, person.firstName || "")
       .replace(/{[Ff]ull[Nn]ame}/g, `${person.firstName || ""} ${person.lastName || ""}`.trim());
 
-    const personCol = person.personType === "worker" ? "workers" : "members";
-    let deliveryStatus: "Sent" | "Failed" = "Sent";
-    let wamid = null;
-    let errMessage = "";
+    const batchIndex = Math.floor(index / 5);
+    const batchLabel = "Batch " + String.fromCharCode(65 + batchIndex);
 
-    try {
-      if (whatsappService.getStatus().status === "connected") {
-        const result = await sendWhatsAppMessage(config, person.whatsAppNumber, formattedMsg);
-        wamid = result.messages?.[0]?.id || null;
-        processedCount++;
-      } else {
-        throw new Error("WhatsApp status is not connected. Please connect via QR code in settings.");
-      }
-    } catch (err: any) {
-      console.error(`Failed to send automated Wednesday reminder to ${person.whatsAppNumber}:`, err.message);
-      deliveryStatus = "Failed";
-      errMessage = err.message;
-      failedCount++;
-    }
-
-    const now = new Date();
-    const dateSentStr = now.toISOString().split("T")[0];
-    const timeSentStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
-
-    await db.collection("whatsapp_logs").insertOne({
-      id: generateId(),
+    return {
       personId: person.id,
-      personName: `${person.firstName} ${person.lastName}`,
-      personType: person.personType,
+      firstName: person.firstName,
+      lastName: person.lastName,
       whatsAppNumber: person.whatsAppNumber,
-      messageContent: formattedMsg,
-      sentAt: now.toISOString(),
-      dateSent: dateSentStr,
-      timeSent: timeSentStr,
-      deliveryStatus,
-      readStatus: "Unread",
-      messageStatus: deliveryStatus,
-      messageType: "Wednesday Word Cafe Reminder",
-      failedStatus: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : "",
-      wamid,
-    });
-
-    await db.collection(personCol).updateOne(
-      { id: person.id },
-      {
-        $set: {
-          messageSent: true,
-          messageSentDate: now.toISOString(),
-          messageDeliveryStatus: deliveryStatus,
-        }
-      }
-    );
-
-    executionLogs.push({
-      personId: person.id,
-      name: `${person.firstName} ${person.lastName}`,
       personType: person.personType,
-      status: deliveryStatus,
-      phone: person.whatsAppNumber,
-      error: deliveryStatus === "Failed" ? (errMessage || "Transmission failed.") : null,
-    });
-  }
-
-  // Always write a system execution log to prevent duplicate trigger loops
-  const systemNow = new Date();
-  await db.collection("whatsapp_logs").insertOne({
-    id: "sys_" + generateId(),
-    personId: "system",
-    personName: "System Scheduler",
-    personType: "system",
-    whatsAppNumber: "0000000000",
-    messageContent: `Wednesday campaign completed. Sent: ${processedCount}, Failed: ${failedCount}`,
-    sentAt: systemNow.toISOString(),
-    dateSent: systemNow.toISOString().split("T")[0],
-    timeSent: systemNow.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }),
-    deliveryStatus: "Sent",
-    readStatus: "Read",
-    messageStatus: "Sent",
-    messageType: "Wednesday Word Cafe Reminder",
-    failedStatus: "",
-    wamid: "sys_wamid_" + Date.now(),
+      messageType: "Wednesday Word Cafe Reminder" as const,
+      messageContent: formattedMsg,
+      campaignRunId,
+      batchLabel,
+    };
   });
 
-  return { processedCount, failedCount, logs: executionLogs };
+  // Write initial scheduler_run record in DB
+  const targets = queueItems.map((item) => ({
+    personId: item.personId,
+    personName: `${item.firstName} ${item.lastName}`,
+    personType: item.personType,
+    whatsAppNumber: item.whatsAppNumber,
+    status: "Pending",
+    batchLabel: item.batchLabel,
+  }));
+
+  await db.collection("scheduler_runs").insertOne({
+    id: campaignRunId,
+    campaignType: "Wednesday Word Cafe Reminder",
+    triggerType: "Manual",
+    executedAt: new Date().toISOString(),
+    targetedCount: queueItems.length,
+    processedCount: 0,
+    failedCount: 0,
+    targets,
+    logs: targets,
+    status: "Completed",
+  });
+
+  // Push to queue
+  await queueService.addToQueue(queueItems);
+
+  return { campaignRunId, processedCount: queueItems.length, failedCount: 0, logs: targets };
 }
 
 // Dynamic trigger for developers/Admins to instantly test Sunday follow-ups
@@ -3988,6 +4727,35 @@ app.post("/api/backup/check-manual", requireSubscription, async (req, res) => {
 // SCHEDULER (Cron Jobs)
 // ==========================================
 
+// Auto-Backup Dynamic Scheduler
+cron.schedule("0 0 * * *", async () => {
+  try {
+    const db = await getDb();
+    const config = await db.collection("settings").findOne({ id: "auto_backup_config" });
+    if (!config) return;
+
+    const frequency = config.frequency; // "Daily", "Weekly", "Monthly", "Disabled"
+    if (frequency === "Disabled") return;
+
+    const today = new Date();
+    if (frequency === "Weekly" && today.getDay() !== 0) {
+      // Weekly backup runs on Sunday (0) only
+      return;
+    }
+    if (frequency === "Monthly" && today.getDate() !== 1) {
+      // Monthly backup runs on the 1st of the month only
+      return;
+    }
+
+    console.log(`[Scheduled Backup] Triggering automated backup execution for plan: ${frequency}...`);
+    await performAutomatedBackup("System Auto-Scheduler");
+  } catch (err: any) {
+    console.error("[Scheduled Backup] Trigger failed:", err.message);
+  }
+}, {
+  timezone: "Africa/Lagos"
+});
+
 // Check database backup status once every day at 9:00 AM (0 9 * * *)
 cron.schedule("0 9 * * *", async () => {
   try {
@@ -4014,10 +4782,10 @@ cron.schedule("0 10 * * 3", async () => {
   timezone: "Africa/Lagos"
 });
 
-// Saturday at exactly 6:00 PM (0 18 * * 6)
-cron.schedule("0 18 * * 6", async () => {
+// Saturday at exactly 10:00 AM (0 10 * * 6)
+cron.schedule("0 10 * * 6", async () => {
   try {
-    console.log("[Automated Scheduler] Triggering Saturday 6:00 PM Encouragement transmission...");
+    console.log("[Automated Scheduler] Triggering Saturday 10:00 AM Encouragement transmission...");
     const result = await executeSaturdayEncouragement();
     console.log(`Automated Saturday Encouragement completed. Sent: ${result.processedCount}, Failed: ${result.failedCount}`);
     await logSchedulerRun("Saturday Encouragement", "Cron", result);
@@ -4069,6 +4837,25 @@ cron.schedule("0 0 * * 0", async () => {
 // ==========================================
 
 async function startServer() {
+  const httpServer = http.createServer(app);
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"]
+    }
+  });
+
+  // Global catch-all error handling middleware to always return proper JSON errors instead of HTML stacktraces
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err) {
+      console.error("[Global Error Handler] Caught uncaught error:", err);
+      return res.status(err.status || 500).json({
+        error: err.message || "An unexpected system error occurred"
+      });
+    }
+    next();
+  });
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -4084,8 +4871,16 @@ async function startServer() {
   }
 
   // Start Server on PORT 3000 and HOST 0.0.0.0
-  app.listen(PORT, "0.0.0.0", async () => {
+  httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`Church Attendance Management Server running on port ${PORT}`);
+    
+    // Initialize Queue Service
+    try {
+      await queueService.init(getDb, io);
+      console.log("[Startup] WhatsApp sequential queue service initialized successfully!");
+    } catch (qErr: any) {
+      console.error("[Startup] Failed to initialize Queue service:", qErr.message);
+    }
     
     // Initialize Baileys WhatsApp service
     try {
